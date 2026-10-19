@@ -170,7 +170,7 @@ fn dispatch(cli: Cli) -> Res<i32> {
             supervise(&home, &dir, &mut meta, &brief, true)
         }
         Cli::Wait { task, max } => wait(&home.join("tasks").join(task), max),
-        Cli::Fix { task, notes } => {
+        Cli::Fix { task, notes, json } => {
             let text = fs::read_to_string(&notes)
                 .map_err(|e| Error::usage(format!("{}: {e}", notes.display())))?;
             brief::lint(&text)?;
@@ -203,7 +203,7 @@ fn dispatch(cli: Cli) -> Res<i32> {
             } else {
                 text
             };
-            execute(&home, &dir, &mut meta, &brief, &text, true, false)
+            execute(&home, &dir, &mut meta, &brief, &text, true, json)
         }
         Cli::Ps { json } => {
             let mut rows = Vec::new();

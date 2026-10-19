@@ -100,21 +100,24 @@ impl Progress {
 impl Status {
     pub fn line(&self) -> String {
         let secs = paths::now().saturating_sub(self.started);
-        let tokens = self.tokens.input + self.tokens.output;
-        let tokens = if tokens >= 1000 {
-            format!("{}k", tokens / 1000)
-        } else {
-            tokens.to_string()
-        };
-        format!(
-            "{} · {} · {} files · {} cmds · {} tok · {}m{:02}s",
-            self.agent,
-            self.effort,
-            self.files,
-            self.commands,
-            tokens,
-            secs / 60,
-            secs % 60
-        )
+        let mut parts = vec![self.agent.clone(), self.effort.clone()];
+        for (count, label) in [(self.files, "files"), (self.commands, "cmds")] {
+            if count > 0 {
+                parts.push(format!("{count} {label}"));
+            }
+        }
+        if !self.tests.is_empty() && self.tests != "0" && self.tests != "0/0" {
+            parts.push(format!("tests {}", self.tests));
+        }
+        let tokens = self.tokens.input.saturating_add(self.tokens.output);
+        if tokens > 0 {
+            parts.push(if tokens >= 1000 {
+                format!("{}k tok", tokens / 1000)
+            } else {
+                format!("{tokens} tok")
+            });
+        }
+        parts.push(format!("{}m{:02}s", secs / 60, secs % 60));
+        parts.join(" · ")
     }
 }

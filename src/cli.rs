@@ -6,18 +6,45 @@ pub enum Cli {
     HookAdapt(crate::hook_adapt::Options),
     Run(Run),
     Route(Route),
-    Scorecard { since: Option<u64>, json: bool },
-    Review { task: String, by: String },
+    Scorecard {
+        since: Option<u64>,
+        json: bool,
+    },
+    Review {
+        task: String,
+        by: String,
+    },
     Supervise(String),
-    Wait { task: String, max: u64 },
-    Fix { task: String, notes: PathBuf },
-    Ps { json: bool },
-    Show { task: String, view: String },
-    Accept { task: String, squash: bool },
+    Wait {
+        task: String,
+        max: u64,
+    },
+    Fix {
+        task: String,
+        notes: PathBuf,
+        json: bool,
+    },
+    Ps {
+        json: bool,
+    },
+    Show {
+        task: String,
+        view: String,
+    },
+    Accept {
+        task: String,
+        squash: bool,
+    },
     Drop(String),
-    Usage { json: bool, refresh: bool },
+    Usage {
+        json: bool,
+        refresh: bool,
+    },
     Statusline(String),
-    Doctor { quick: bool, out: Option<PathBuf> },
+    Doctor {
+        quick: bool,
+        out: Option<PathBuf>,
+    },
     Setup(crate::setup::Options),
     Help,
 }
@@ -303,12 +330,23 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
         "review" => {
             let task = value(&mut args, "task")?;
             task_id(&task)?;
-            if args.next().as_deref() != Some("--by") {
-                return Err(Error::usage("usage: baton review <task> --by <codex|agy>"));
+            let mut by = String::new();
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--by" => by = value(&mut args, &flag)?,
+                    // Reviews already print only the final result JSON.
+                    "--json" => {}
+                    _ => {
+                        return Err(Error::usage(
+                            "usage: baton review <task> --by <codex|agy> [--json]",
+                        ))
+                    }
+                }
             }
-            let by = value(&mut args, "--by")?;
-            if !["codex", "agy"].contains(&by.as_str()) || args.next().is_some() {
-                return Err(Error::usage("usage: baton review <task> --by <codex|agy>"));
+            if !["codex", "agy"].contains(&by.as_str()) {
+                return Err(Error::usage(
+                    "usage: baton review <task> --by <codex|agy> [--json]",
+                ));
             }
             Ok(Cli::Review { task, by })
         }
@@ -349,12 +387,25 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             task_id(&task)?;
             let command = match cmd.as_str() {
                 "fix" => {
-                    if args.next().as_deref() != Some("--notes") {
-                        return Err(Error::usage("usage: baton fix <task> --notes FILE"));
+                    let mut notes = None;
+                    let mut json = false;
+                    while let Some(flag) = args.next() {
+                        match flag.as_str() {
+                            "--notes" => notes = Some(value(&mut args, &flag)?.into()),
+                            "--json" => json = true,
+                            _ => {
+                                return Err(Error::usage(
+                                    "usage: baton fix <task> --notes FILE [--json]",
+                                ))
+                            }
+                        }
                     }
                     Cli::Fix {
                         task,
-                        notes: value(&mut args, "--notes")?.into(),
+                        notes: notes.ok_or_else(|| {
+                            Error::usage("usage: baton fix <task> --notes FILE [--json]")
+                        })?,
+                        json,
                     }
                 }
                 "show" => {

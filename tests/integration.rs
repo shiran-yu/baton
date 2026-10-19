@@ -690,7 +690,9 @@ fn wait_max_progress_then_worker_exit_codes() {
     let line = String::from_utf8(waiting.stdout).unwrap();
     assert_eq!(line.lines().count(), 1);
     assert!(line.starts_with("codex · medium · "));
-    assert!(line.contains(" files · ") && line.contains(" cmds · ") && line.contains(" tok · "));
+    for label in [" files", " cmds", " tok", "tests"] {
+        assert!(!line.contains(label), "{line}");
+    }
     code(&f.call(&["wait", "slow", "--max", "20"]), 0);
     for (id, goal, acceptance, expected) in [
         ("bad-verification", "Write a file", "false", 3),
@@ -1029,6 +1031,86 @@ fn review_has_separate_artifacts_and_classified_ledger_entry() {
     assert_eq!(entry["type"], "review");
     assert_eq!(entry["difficulty"], 2); // src/** alone is an ordinary scope
     assert_eq!(entry["rounds"], 0);
+}
+
+#[test]
+fn fix_and_review_json_print_only_the_result_line() {
+    let f = Fixture::new();
+    code(&f.run("source", "Build it", "true"), 0);
+    let notes = f.dir.join("notes.md");
+    fs::write(&notes, "Append the correction.").unwrap();
+    for before in [false, true] {
+        let mut command = f.command();
+        command.args(["fix", "source"]);
+        if before {
+            command.arg("--json");
+        }
+        command.arg("--notes").arg(&notes);
+        if !before {
+            command.arg("--json");
+        }
+        let out = command.output().unwrap();
+        code(&out, 0);
+        assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 1);
+        assert_eq!(json(&out), f.read("source", "result.json"));
+    }
+    for flags in [["--by", "codex", "--json"], ["--json", "--by", "codex"]] {
+        let out = f
+            .command()
+            .args(["review", "source"])
+            .args(flags)
+            .output()
+            .unwrap();
+        code(&out, 0);
+        assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 1);
+        let result = json(&out);
+        assert_eq!(result["verified"], true);
+        assert_eq!(
+            result,
+            f.read(result["task"].as_str().unwrap(), "result.json")
+        );
+    }
+}
+
+#[test]
+fn wait_progress_omits_zero_counts_and_keeps_nonzero_counts() {
+    let f = Fixture::new();
+    code(&f.run("progress", "Build it", "true"), 0);
+    let mut status = f.read("progress", "status.json");
+    status["phase"] = "running".into();
+    for (files, commands, tokens, tests, expected) in [
+        (0, 0, 0, "", "codex · medium · "),
+        (0, 4, 0, "0", "codex · medium · 4 cmds · "),
+        (2, 0, 42, "0/0", "codex · medium · 2 files · 42 tok · "),
+        (
+            2,
+            4,
+            1234,
+            "1/2",
+            "codex · medium · 2 files · 4 cmds · tests 1/2 · 1k tok · ",
+        ),
+        (0, 0, 0, "0/2", "codex · medium · tests 0/2 · "),
+    ] {
+        status["files"] = files.into();
+        status["commands"] = commands.into();
+        status["tokens"]["input"] = tokens.into();
+        status["tokens"]["output"] = 0.into();
+        status["tests"] = tests.into();
+        fs::write(
+            f.task("progress").join("status.json"),
+            serde_json::to_vec(&status).unwrap(),
+        )
+        .unwrap();
+        let out = f.call(&["wait", "progress", "--max", "0"]);
+        code(&out, 7);
+        let line = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(line.lines().count(), 1);
+        let elapsed = line
+            .strip_prefix(expected)
+            .unwrap_or_else(|| panic!("{line:?} should start with {expected:?}"));
+        assert!(elapsed.trim().ends_with('s') && elapsed.contains('m'));
+        assert!(!elapsed.contains('·'), "unexpected counts in {line}");
+    }
 }
 
 #[test]
