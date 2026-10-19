@@ -2,6 +2,8 @@ use crate::{Error, Res};
 use std::path::PathBuf;
 
 pub enum Cli {
+    Sync(crate::sync::Options),
+    HookAdapt(crate::hook_adapt::Options),
     Run(Run),
     Route(Route),
     Scorecard { since: Option<u64>, json: bool },
@@ -82,6 +84,64 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             .ok_or_else(|| Error::usage(format!("{flag} requires a value")))
     };
     match cmd.as_str() {
+        "sync" => {
+            let mut options = crate::sync::Options::default();
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--dry-run" => options.dry_run = true,
+                    "--include-trading" => options.include_trading = true,
+                    "--only" => {
+                        options.only = value(&mut args, &flag)?
+                            .split(',')
+                            .map(String::from)
+                            .collect();
+                        for name in &options.only {
+                            task_id(name)?;
+                        }
+                    }
+                    "--to" => {
+                        options.hosts = value(&mut args, &flag)?
+                            .split(',')
+                            .map(String::from)
+                            .collect();
+                        if options
+                            .hosts
+                            .iter()
+                            .any(|host| !["codex", "agy"].contains(&host.as_str()))
+                        {
+                            return Err(Error::usage("--to must be codex, agy or codex,agy"));
+                        }
+                        options.hosts.dedup();
+                    }
+                    _ => return Err(Error::usage(format!("unknown option: {flag}"))),
+                }
+            }
+            Ok(Cli::Sync(options))
+        }
+        "hook-adapt" => {
+            let (mut host, mut event) = (String::new(), String::new());
+            let mut command = Vec::new();
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--from" => host = value(&mut args, &flag)?,
+                    "--event" => event = value(&mut args, &flag)?,
+                    "--" => {
+                        command.extend(args);
+                        break;
+                    }
+                    _ => return Err(Error::usage(format!("unknown option: {flag}"))),
+                }
+            }
+            if !["agy", "codex"].contains(&host.as_str()) || event.is_empty() || command.is_empty()
+            {
+                return Err(Error::usage("usage: baton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]"));
+            }
+            Ok(Cli::HookAdapt(crate::hook_adapt::Options {
+                host,
+                event,
+                command,
+            }))
+        }
         "--help" | "-h" | "help" => Ok(Cli::Help),
         "usage" => {
             let (mut json, mut refresh) = (false, false);
