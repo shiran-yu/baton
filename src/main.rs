@@ -9,7 +9,10 @@ mod git;
 mod ledger;
 mod paths;
 mod process;
+mod quota;
 mod result;
+mod route;
+mod scorecard;
 mod status;
 mod statusline;
 mod usage;
@@ -115,12 +118,37 @@ fn dispatch(cli: Cli) -> Res<i32> {
         return Ok(0);
     }
     if let Cli::Help = cli {
-        println!("baton run <codex|agy> --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]");
+        println!("baton run <codex|agy|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]");
         return Ok(0);
     }
     let home = paths::home()?;
     match cli {
         Cli::Run(run) => start(&home, run),
+        Cli::Route(options) => {
+            let brief = Brief::parse_for_route(fs::read_to_string(&options.brief)?)?;
+            let class = route::classify(&brief, options.task_type.as_deref(), options.difficulty)?;
+            let routing = routing(&home, &brief, &class)?;
+            if options.json {
+                println!("{}", serde_json::to_string(&routing)?);
+            } else {
+                route::print(&routing.choice);
+                if let Some(second) = routing.runner_up {
+                    print!("runner-up: ");
+                    route::print(&second);
+                }
+            }
+            Ok(0)
+        }
+        Cli::Scorecard { since, json } => {
+            let card = scorecard::aggregate(&ledger::read(&home)?, since, paths::now());
+            if json {
+                println!("{}", serde_json::to_string(&card)?);
+            } else {
+                scorecard::print(&card);
+            }
+            Ok(0)
+        }
+        Cli::Review { task, by } => review(&home, &task, by),
         Cli::Supervise(task) => {
             let dir = home.join("tasks").join(task);
             // The parent transfers its existing lock after spawning this supervisor.
@@ -151,6 +179,7 @@ fn dispatch(cli: Cli) -> Res<i32> {
                 ));
             }
             let brief = Brief::parse(fs::read_to_string(dir.join("brief.md"))?)?;
+            classify_meta(&mut meta, &brief)?;
             meta.rounds += 1;
             // An explicit agy fix starts a fresh session with the brief and current diff.
             let text = if meta.agent == "agy" {
@@ -250,10 +279,51 @@ fn dispatch(cli: Cli) -> Res<i32> {
     }
 }
 
-fn start(home: &Path, run: cli::Run) -> Res<i32> {
+fn routing(home: &Path, brief: &Brief, class: &route::Classification) -> Res<route::Routing> {
+    // Hard rules do not depend on availability or the ledger being readable.
+    let history = if route::hard_rule(class, brief).is_none() {
+        ledger::read(home)?
+    } else {
+        Vec::new()
+    };
+    Ok(route::recommend(
+        class,
+        brief,
+        &history,
+        &quota::Usage::cached(home),
+        paths::now(),
+    ))
+}
+
+fn classify_meta(meta: &mut Meta, brief: &Brief) -> Res<()> {
+    if meta.task_type.is_empty() || meta.difficulty == 0 {
+        let class = route::classify(brief, None, None)?;
+        meta.task_type = class.task_type;
+        meta.difficulty = class.difficulty;
+    }
+    Ok(())
+}
+
+fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
     let text = fs::read_to_string(&run.brief)
         .map_err(|e| Error::usage(format!("{}: {e}", run.brief.display())))?;
-    let brief = Brief::parse(text)?;
+    let brief = Brief::parse_for_route(text)?;
+    let class = route::classify(&brief, run.task_type.as_deref(), run.difficulty)?;
+    if run.agent == "auto" {
+        let choice = routing(home, &brief, &class)?.choice;
+        if choice.agent == "claude" {
+            println!(
+                "{}",
+                serde_json::json!({"status":"needs_decision", "agent":"claude",
+                "notes":choice.reason, "choice":choice, "questions":["The lead should handle this brief."]})
+            );
+            return Ok(6);
+        }
+        run.agent = choice.agent;
+        run.model = choice.model.unwrap_or_default();
+        run.effort = choice.effort.unwrap_or_default();
+    }
+    brief::lint(&brief.text)?;
     let root = git::root()?;
     let base_commit = git::run(
         &root,
@@ -309,6 +379,8 @@ fn start(home: &Path, run: cli::Run) -> Res<i32> {
         model: run.model,
         effort: run.effort,
         mode: run.mode,
+        task_type: class.task_type,
+        difficulty: class.difficulty,
         base: run.base,
         base_commit,
         base_branch,
@@ -349,6 +421,7 @@ fn start(home: &Path, run: cli::Run) -> Res<i32> {
 }
 
 fn supervise(home: &Path, dir: &Path, meta: &mut Meta, brief: &Brief, json: bool) -> Res<i32> {
+    classify_meta(meta, brief)?;
     let outcome = (|| {
         if !meta.branch.is_empty() {
             if let Some(parent) = Path::new(&meta.worktree).parent() {
@@ -638,7 +711,62 @@ fn commit_task(meta: &Meta, brief: &Brief) -> Res<()> {
             "worker switched branches; refusing to commit",
         ));
     }
-    git::commit(cwd, &format!("baton {}: {}", meta.task, brief.goal))
+    git::commit(cwd, &brief.subject(&meta.task))
+}
+
+fn review(home: &Path, task: &str, by: String) -> Res<i32> {
+    let source = home.join("tasks").join(task);
+    let _source_lock = Lock::acquire(&source)?;
+    let mut meta: Meta = paths::read_json(&source.join("meta.json"))?;
+    if meta.closed || meta.branch.is_empty() {
+        return Err(Error::usage(
+            "review requires an open task with a managed worktree",
+        ));
+    }
+    let original = Brief::parse(fs::read_to_string(source.join("brief.md"))?)?;
+    classify_meta(&mut meta, &original)?;
+    let cwd = Path::new(&meta.worktree);
+    if !git::run(cwd, &["status", "--porcelain"])?.trim().is_empty() {
+        return Err(Error::usage("commit or fix task changes before reviewing"));
+    }
+    let diff = git::run(cwd, &["diff", &meta.base_commit, "--"])?;
+    brief::lint(&diff)?;
+    // Give the reviewer its own result, logs and thread. Compare against the
+    // current commit with no allowed files so any reviewer edits fail verification.
+    meta.base_commit = git::run(cwd, &["rev-parse", "HEAD"])?.trim().into();
+    meta.task = format!("review-{}", paths::id());
+    cli::task_id(&meta.task)?;
+    meta.agent = by;
+    meta.model = if meta.agent == "agy" {
+        "gemini-3.8-flash"
+    } else {
+        "gpt-6.1-sol"
+    }
+    .into();
+    meta.effort = ["low", "medium", "high", "xhigh"][(if meta.agent == "agy" {
+        meta.difficulty.min(3)
+    } else {
+        meta.difficulty
+    } - 1) as usize]
+        .into();
+    meta.mode = "read".into();
+    meta.task_type = "review".into();
+    meta.branch.clear();
+    meta.thread_id = None;
+    meta.rounds = 0;
+    meta.auto_fix = 0;
+    meta.closed = true;
+    let brief = Brief::parse(format!("## Goal\nReview task {task} for bugs, regressions and missing tests. Report findings with file and line references. Do not edit any files.\n## Files\nnone\n## Forbidden\nAll edits.\n## Acceptance\n\n## Context\nOriginal brief and diff are supplied in the review prompt.\n"))?;
+    let input = format!(
+        "{}\nOriginal brief (reference only):\n{}\n\nDiff to review:\n{diff}",
+        brief.text, original.text
+    );
+    let dir = home.join("tasks").join(&meta.task);
+    fs::create_dir(&dir)?;
+    let _lock = Lock::acquire(&dir)?;
+    fs::write(dir.join("brief.md"), &brief.text)?;
+    fs::write(dir.join("review-prompt.md"), &input)?;
+    execute(home, &dir, &mut meta, &brief, &input, false, true)
 }
 
 fn manage(home: &Path, task: &str, accept: Option<bool>) -> Res<i32> {
@@ -653,6 +781,8 @@ fn manage(home: &Path, task: &str, accept: Option<bool>) -> Res<i32> {
     }
     let root = Path::new(&meta.repo_root);
     if let Some(squash) = accept {
+        let brief = Brief::parse(fs::read_to_string(dir.join("brief.md"))?)?;
+        let subject = brief.subject(task);
         if !git::run(Path::new(&meta.worktree), &["status", "--porcelain"])?
             .trim()
             .is_empty()
@@ -677,7 +807,7 @@ fn manage(home: &Path, task: &str, accept: Option<bool>) -> Res<i32> {
         }
         if squash {
             git::run(root, &["merge", "--squash", &meta.branch])?;
-            git::commit(root, &format!("baton {task}: accept"))?;
+            git::commit(root, &subject)?;
         } else {
             git::run(
                 root,
@@ -692,6 +822,8 @@ fn manage(home: &Path, task: &str, accept: Option<bool>) -> Res<i32> {
                     "core.hooksPath=/dev/null",
                     "merge",
                     "--no-edit",
+                    "-m",
+                    &subject,
                     &meta.branch,
                 ],
             )?;

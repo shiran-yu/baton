@@ -1,0 +1,6 @@
+{"agent":"codex","type":"implement","difficulty":2,"status":"done","verified":true,"rounds":0,"tokens":{"input":100,"cached":60,"output":20},"seconds":10,"timestamp":200000}
+{"agent":"codex","type":"implement","difficulty":2,"status":"done","verified":true,"rounds":1,"tokens":{"input":300,"cached":60,"output":60},"seconds":30,"timestamp":200001}
+{"agent":"agy","type":"docs","difficulty":1,"status":"partial","verified":true,"rounds":0,"tokens":{"input":40,"cached":10,"output":10},"seconds":20,"timestamp":200002}
+{"agent":"codex","type":"docs","difficulty":1,"status":"done","verified":true,"rounds":0,"tokens":{"input":10,"cached":0,"output":0},"seconds":5,"timestamp":100000}
+{"agent":"codex","type":"implement","difficulty":3,"status":"failed","verified":false,"rounds":0,"tokens":{"input":800,"cached":400,"output":200},"seconds":100,"timestamp":200003}
+{"agent":"agy","type":"research","status":"done","verified":true,"tokens":{"input":10,"cached":0,"output":0},"seconds":1}

@@ -82,22 +82,21 @@ impl Agy {
                 binary
             };
         let mut command = Command::new(binary);
+        command.args([
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--agent",
+            "baton-worker",
+            "--model",
+            &meta.model,
+        ]);
+        if !meta.effort.is_empty() {
+            command.args(["--effort", &meta.effort]);
+        }
         command
-            .args([
-                "--input-format",
-                "stream-json",
-                "--output-format",
-                "stream-json",
-                "--agent",
-                "baton-worker",
-                "--model",
-                &meta.model,
-                "--effort",
-                &meta.effort,
-                "--mode",
-                "accept-edits",
-                "--json-schema",
-            ])
+            .args(["--mode", "accept-edits", "--json-schema"])
             .arg(dir.join("schema.json"))
             .arg("--print-timeout")
             .arg(format!("{}s", meta.timeout));
