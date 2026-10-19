@@ -6,6 +6,7 @@ mod cli;
 mod codex;
 mod doctor;
 mod git;
+mod hook_adapt;
 mod ledger;
 mod paths;
 mod process;
@@ -15,6 +16,7 @@ mod route;
 mod scorecard;
 mod status;
 mod statusline;
+mod sync;
 mod usage;
 mod verify;
 mod worker;
@@ -106,6 +108,9 @@ fn main() {
 }
 
 fn dispatch(cli: Cli) -> Res<i32> {
+    if let Cli::HookAdapt(options) = &cli {
+        return hook_adapt::run(options);
+    }
     // Hooks are best effort, including when HOME or the state directory is unavailable.
     if let Cli::Statusline(mode) = &cli {
         if let Ok(home) = paths::home() {
@@ -118,11 +123,13 @@ fn dispatch(cli: Cli) -> Res<i32> {
         return Ok(0);
     }
     if let Cli::Help = cli {
-        println!("baton run <codex|agy|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]");
+        println!("baton run <codex|agy|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton sync [--dry-run] [--to codex,agy] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
         return Ok(0);
     }
     let home = paths::home()?;
     match cli {
+        Cli::Sync(options) => sync::run(&home, &options),
+        Cli::HookAdapt(_) => unreachable!(),
         Cli::Run(run) => start(&home, run),
         Cli::Route(options) => {
             let brief = Brief::parse_for_route(fs::read_to_string(&options.brief)?)?;
