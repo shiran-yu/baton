@@ -15,6 +15,7 @@ env > "$taskdir/environment.txt"
 input=$(cat)
 printf '%s' "$input" > "$taskdir/input-$resume.txt"
 case "$input" in
+    *FAKE_WAIT_SLEEP*) sleep 3 ;;
     *FAKE_SLEEP*)
         (sleep 2; printf survived > "$taskdir/child-survived"; sleep 28) &
         printf '%s' "$!" > "$taskdir/child.pid"
@@ -24,7 +25,8 @@ case "$input" in
 esac
 printf '%s\n' '{"type":"thread.started","thread_id":"fake-thread-123"}' '{"type":"turn.started"}'
 printf '%s\n' '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"cargo test\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}'
-case "$input" in
+original=$(cat "$taskdir/input-no.txt")
+case "$original" in
     *FAKE_NO_EDIT*) ;;
     *)
         mkdir -p src

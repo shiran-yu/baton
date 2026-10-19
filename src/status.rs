@@ -1,5 +1,5 @@
 use crate::{paths, result::Tokens, Res};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs::OpenOptions,
     io::Write,
@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Status {
     pub task: String,
     pub agent: String,
@@ -77,7 +77,12 @@ impl Progress {
     }
     pub fn log(&self, text: &str) -> Res<()> {
         let secs = self.start.elapsed().as_secs();
-        let line = format!("[codex {:02}:{:02}] {text}", secs / 60, secs % 60);
+        let line = format!(
+            "[{} {:02}:{:02}] {text}",
+            self.status.agent,
+            secs / 60,
+            secs % 60
+        );
         writeln!(
             OpenOptions::new()
                 .create(true)
@@ -89,5 +94,27 @@ impl Progress {
             println!("{line}");
         }
         Ok(())
+    }
+}
+
+impl Status {
+    pub fn line(&self) -> String {
+        let secs = paths::now().saturating_sub(self.started);
+        let tokens = self.tokens.input + self.tokens.output;
+        let tokens = if tokens >= 1000 {
+            format!("{}k", tokens / 1000)
+        } else {
+            tokens.to_string()
+        };
+        format!(
+            "{} · {} · {} files · {} cmds · {} tok · {}m{:02}s",
+            self.agent,
+            self.effort,
+            self.files,
+            self.commands,
+            tokens,
+            secs / 60,
+            secs % 60
+        )
     }
 }

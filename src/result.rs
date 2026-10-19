@@ -28,6 +28,8 @@ pub struct Result {
     pub questions: Vec<String>,
     pub tokens: Tokens,
     pub seconds: u64,
+    #[serde(default)]
+    pub rounds: u32,
     pub worktree: String,
     pub branch: String,
 }
@@ -46,7 +48,9 @@ pub struct Meta {
     pub branch: String,
     pub thread_id: Option<String>,
     pub timeout: u64,
-    pub rounds: u8,
+    pub rounds: u32,
+    #[serde(default = "default_auto_fix")]
+    pub auto_fix: u32,
     #[serde(default)]
     pub closed: bool,
 }
@@ -69,4 +73,8 @@ pub fn tail(s: &str, n: usize) -> String {
 }
 pub fn first(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+fn default_auto_fix() -> u32 {
+    1
 }

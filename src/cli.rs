@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 pub enum Cli {
     Run(Run),
+    Supervise(String),
+    Wait { task: String, max: u64 },
     Fix { task: String, notes: PathBuf },
     Ps { json: bool },
     Show { task: String, view: String },
@@ -12,6 +14,9 @@ pub enum Cli {
 }
 
 pub struct Run {
+    pub agent: String,
+    pub detach: bool,
+    pub auto_fix: u32,
     pub brief: PathBuf,
     pub mode: String,
     pub effort: String,
@@ -49,14 +54,23 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
     match cmd.as_str() {
         "--help" | "-h" | "help" => Ok(Cli::Help),
         "run" => {
-            if args.next().as_deref() != Some("codex") {
-                return Err(Error::usage("only 'run codex' is supported"));
+            let agent = args.next().unwrap_or_default();
+            if !["codex", "agy"].contains(&agent.as_str()) {
+                return Err(Error::usage("worker must be codex or agy"));
             }
             let mut run = Run {
+                model: if agent == "agy" {
+                    "gemini-3.8-flash"
+                } else {
+                    "gpt-6.1-sol"
+                }
+                .into(),
+                agent,
+                detach: false,
+                auto_fix: 1,
                 brief: PathBuf::new(),
                 mode: "edit".into(),
                 effort: "medium".into(),
-                model: "gpt-6.1-sol".into(),
                 task: None,
                 base: "HEAD".into(),
                 timeout: 1800,
@@ -84,6 +98,12 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                     }
                     "--no-worktree" => run.no_worktree = true,
                     "--json" => run.json = true,
+                    "--detach" => run.detach = true,
+                    "--auto-fix" => {
+                        run.auto_fix = value(&mut args, &flag)?.parse().map_err(|_| {
+                            Error::usage("--auto-fix must be a non-negative integer")
+                        })?
+                    }
                     _ => return Err(Error::usage(format!("unknown option: {flag}"))),
                 }
             }
@@ -96,10 +116,34 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             if !["low", "medium", "high", "xhigh"].contains(&run.effort.as_str()) {
                 return Err(Error::usage("invalid --effort"));
             }
+            if run.agent == "agy" && run.effort == "xhigh" {
+                return Err(Error::usage("agy effort must be low, medium or high"));
+            }
             if run.model.is_empty() || run.base.is_empty() || run.base.starts_with('-') {
                 return Err(Error::usage("invalid model or base ref"));
             }
             Ok(Cli::Run(run))
+        }
+        "wait" | "__supervise" => {
+            let task = value(&mut args, "task")?;
+            task_id(&task)?;
+            let mut max = 570;
+            if cmd == "wait" && args.peek().is_some() {
+                if args.next().as_deref() != Some("--max") {
+                    return Err(Error::usage("usage: baton wait <task> [--max SECS]"));
+                }
+                max = value(&mut args, "--max")?
+                    .parse()
+                    .map_err(|_| Error::usage("--max must be a non-negative integer"))?;
+            }
+            if args.next().is_some() {
+                return Err(Error::usage("unexpected argument"));
+            }
+            Ok(if cmd == "wait" {
+                Cli::Wait { task, max }
+            } else {
+                Cli::Supervise(task)
+            })
         }
         "ps" => {
             let json = match args.next().as_deref() {

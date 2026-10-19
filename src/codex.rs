@@ -27,7 +27,7 @@ pub fn kill_group(child: &mut Child) {
     let _ = child.wait();
 }
 
-struct WorkerProcess(Child);
+pub struct WorkerProcess(pub Child);
 impl std::ops::Deref for WorkerProcess {
     type Target = Child;
     fn deref(&self) -> &Child {
@@ -50,7 +50,16 @@ impl Drop for WorkerProcess {
 
 pub fn scrub(command: &mut Command, task: &str) {
     command.env_clear();
-    for name in ["HOME", "PATH", "LANG"] {
+    for name in [
+        "HOME",
+        "PATH",
+        "LANG",
+        "CODEX_HOME",
+        "TMPDIR",
+        "USER",
+        "SHELL",
+        "LC_ALL",
+    ] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
@@ -180,6 +189,7 @@ pub fn run(
         });
     }
     drop(tx);
+    let prior = progress.status.tokens.clone();
     let start = Instant::now();
     let mut counted = BTreeSet::new();
     let mut error = String::new();
@@ -235,9 +245,12 @@ pub fn run(
                             "turn.completed" => {
                                 let usage = &event["usage"];
                                 progress.status.tokens = Tokens {
-                                    input: usage["input_tokens"].as_u64().unwrap_or(0),
-                                    cached: usage["cached_input_tokens"].as_u64().unwrap_or(0),
-                                    output: usage["output_tokens"].as_u64().unwrap_or(0),
+                                    input: prior.input
+                                        + usage["input_tokens"].as_u64().unwrap_or(0),
+                                    cached: prior.cached
+                                        + usage["cached_input_tokens"].as_u64().unwrap_or(0),
+                                    output: prior.output
+                                        + usage["output_tokens"].as_u64().unwrap_or(0),
                                 };
                             }
                             "turn.failed" | "error" => {

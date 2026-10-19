@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod agy;
 mod brief;
 mod cli;
 mod codex;
@@ -9,17 +10,15 @@ mod paths;
 mod result;
 mod status;
 mod verify;
+mod worker;
 
-use crate::{
-    brief::Brief,
-    cli::Cli,
-    result::{Meta, Worker},
-    status::Progress,
-};
+use crate::{brief::Brief, cli::Cli, result::Meta, status::Progress};
 use std::{
     fmt, fs,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    time::Instant,
+    process::{Command, Stdio},
+    time::{Duration, Instant},
 };
 
 #[derive(Debug)]
@@ -101,12 +100,24 @@ fn main() {
 
 fn dispatch(cli: Cli) -> Res<i32> {
     if let Cli::Help = cli {
-        println!("baton run codex --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>");
+        println!("baton run <codex|agy> --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>");
         return Ok(0);
     }
     let home = paths::home()?;
     match cli {
         Cli::Run(run) => start(&home, run),
+        Cli::Supervise(task) => {
+            let dir = home.join("tasks").join(task);
+            // The parent transfers its existing lock after spawning this supervisor.
+            let _lock = Lock(dir.join("active.lock"));
+            if !_lock.0.exists() {
+                return Err(Error::usage("supervisor requires a prepared task lock"));
+            }
+            let mut meta: Meta = paths::read_json(&dir.join("meta.json"))?;
+            let brief = Brief::parse(fs::read_to_string(dir.join("brief.md"))?)?;
+            supervise(&home, &dir, &mut meta, &brief, true)
+        }
+        Cli::Wait { task, max } => wait(&home.join("tasks").join(task), max),
         Cli::Fix { task, notes } => {
             let text = fs::read_to_string(&notes)
                 .map_err(|e| Error::usage(format!("{}: {e}", notes.display())))?;
@@ -114,9 +125,9 @@ fn dispatch(cli: Cli) -> Res<i32> {
             let dir = home.join("tasks").join(&task);
             let _lock = Lock::acquire(&dir)?;
             let mut meta: Meta = paths::read_json(&dir.join("meta.json"))?;
-            if meta.closed || meta.agent != "codex" || meta.thread_id.is_none() {
+            if meta.closed || (meta.agent == "codex" && meta.thread_id.is_none()) {
                 return Err(Error::usage(
-                    "fix requires an open Codex task with a stored thread_id",
+                    "fix requires an open task (Codex needs a stored thread_id)",
                 ));
             }
             if meta.rounds >= 2 {
@@ -126,6 +137,19 @@ fn dispatch(cli: Cli) -> Res<i32> {
             }
             let brief = Brief::parse(fs::read_to_string(dir.join("brief.md"))?)?;
             meta.rounds += 1;
+            // An explicit agy fix starts a fresh session with the brief and current diff.
+            let text = if meta.agent == "agy" {
+                let diff = git::run(
+                    Path::new(&meta.worktree),
+                    &["diff", &meta.base_commit, "--"],
+                )?;
+                format!(
+                    "{}\n\nFix notes:\n{text}\n\nCurrent diff:\n{diff}",
+                    brief.text
+                )
+            } else {
+                text
+            };
             execute(&home, &dir, &mut meta, &brief, &text, true, false)
         }
         Cli::Ps { json } => {
@@ -240,27 +264,13 @@ fn start(home: &Path, run: cli::Run) -> Res<i32> {
         String::new()
     };
     let worktree = if managed {
-        fs::create_dir_all(home.join("wt"))?;
-        let wt = home.join("wt").join(&task);
-        git::run(
-            &root,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                &branch,
-                &wt.to_string_lossy(),
-                &base_commit,
-            ],
-        )
-        .map_err(|e| Error::usage(format!("cannot create task worktree: {e}")))?;
-        wt
+        home.join("wt").join(&task)
     } else {
         root.clone()
     };
     let mut meta = Meta {
         task,
-        agent: "codex".into(),
+        agent: run.agent,
         model: run.model,
         effort: run.effort,
         mode: run.mode,
@@ -273,9 +283,105 @@ fn start(home: &Path, run: cli::Run) -> Res<i32> {
         thread_id: None,
         timeout: run.timeout,
         rounds: 0,
+        auto_fix: run.auto_fix,
         closed: false,
     };
-    execute(home, &dir, &mut meta, &brief, &brief.text, false, run.json)
+    paths::write_json(&dir.join("meta.json"), &meta)?;
+    Progress::new(&dir, &meta, true)?;
+    if run.detach {
+        // Keep the task locked across the re-exec handoff.
+        let stdout = fs::File::create(dir.join("supervisor.stdout"))?;
+        let stderr = fs::File::create(dir.join("supervisor.stderr"))?;
+        let stdin = fs::File::create(dir.join("supervisor.stdin"))?;
+        let stdin = {
+            drop(stdin);
+            fs::File::open(dir.join("supervisor.stdin"))?
+        };
+        Command::new(std::env::current_exe()?)
+            .args(["__supervise", &meta.task])
+            .env("BATON_HOME", home)
+            .stdin(Stdio::from(stdin))
+            .stdout(stdout)
+            .stderr(stderr)
+            .process_group(0)
+            .spawn()?;
+        std::mem::forget(_lock); // The supervisor now owns cleanup of active.lock.
+        println!("{}", meta.task);
+        Ok(0)
+    } else {
+        supervise(home, &dir, &mut meta, &brief, run.json)
+    }
+}
+
+fn supervise(home: &Path, dir: &Path, meta: &mut Meta, brief: &Brief, json: bool) -> Res<i32> {
+    let outcome = (|| {
+        if !meta.branch.is_empty() {
+            fs::create_dir_all(home.join("wt"))?;
+            git::run(
+                Path::new(&meta.repo_root),
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    &meta.branch,
+                    &meta.worktree,
+                    &meta.base_commit,
+                ],
+            )?;
+        }
+        execute(home, dir, meta, brief, &brief.text, false, json)
+    })();
+    if let Err(e) = &outcome {
+        // wait must also terminate when setup fails before a worker is started.
+        let mut progress = Progress::new(dir, meta, true)?;
+        progress.status.phase = "failed".into();
+        progress.log(&e.to_string())?;
+        let result = result::Result {
+            task: meta.task.clone(),
+            agent: meta.agent.clone(),
+            model: meta.model.clone(),
+            effort: meta.effort.clone(),
+            status: "failed".into(),
+            verified: false,
+            files_changed: Vec::new(),
+            diffstat: "+0 -0 in 0 files".into(),
+            out_of_scope: Vec::new(),
+            acceptance: Vec::new(),
+            notes: e.to_string(),
+            questions: Vec::new(),
+            tokens: result::Tokens::default(),
+            seconds: 0,
+            rounds: meta.rounds,
+            worktree: meta.worktree.clone(),
+            branch: meta.branch.clone(),
+        };
+        publish(home, dir, meta, &result, e.code, &mut progress)?;
+    }
+    outcome
+}
+
+fn wait(dir: &Path, max: u64) -> Res<i32> {
+    let start = Instant::now();
+    loop {
+        let status: status::Status = paths::read_json(&dir.join("status.json"))?;
+        if ["done", "failed"].contains(&status.phase.as_str()) && dir.join("exit.json").exists() {
+            let code = paths::read_json(&dir.join("exit.json"))?;
+            if dir.join("result.json").exists() {
+                println!(
+                    "{}",
+                    fs::read_to_string(dir.join("result.json"))?.trim_end()
+                );
+            } else {
+                return Err(Error::new(code, "task setup failed; see task log"));
+            }
+            return Ok(code);
+        }
+        if start.elapsed() >= Duration::from_secs(max) {
+            println!("{}", status.line());
+            return Ok(7);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 fn execute(
@@ -287,46 +393,88 @@ fn execute(
     resume: bool,
     json: bool,
 ) -> Res<i32> {
+    let _ = fs::remove_file(dir.join("exit.json"));
+    let _ = fs::remove_file(dir.join("result.json"));
     paths::write_json(&dir.join("meta.json"), meta)?;
     let mut progress = Progress::new(dir, meta, json)?;
     let start = Instant::now();
-    let outcome = match codex::run(dir, meta, input, resume, &mut progress) {
-        Ok(outcome) => outcome,
-        Err(e) => codex::Outcome {
-            timed_out: false,
-            success: false,
-            error: e.to_string(),
-        },
-    };
-    let raw = fs::read_to_string(dir.join("last.json")).unwrap_or_default();
-    let mut worker = serde_json::from_str::<Worker>(&raw)
-        .ok()
-        .filter(|w| ["done", "partial", "blocked", "needs_decision"].contains(&w.status.as_str()))
-        .unwrap_or_else(|| Worker {
-            status: "failed".into(),
-            notes: result::first(&raw, 300),
-            questions: Vec::new(),
-        });
-    if !outcome.success {
-        worker.status = "failed".into();
-        if !outcome.error.is_empty() {
-            worker.notes = result::first(&outcome.error, 300);
+    let mut driver: Box<dyn worker::Worker> = if meta.agent == "agy" {
+        match agy::Agy::new(dir, meta) {
+            Ok(driver) => Box::new(driver),
+            Err(e) => Box::new(FailedWorker(Some(e))),
         }
-    }
-    let mut verification = match verify::run(dir, meta, brief, &mut progress, outcome.timed_out) {
-        Ok(verification) => verification,
-        Err(e) => {
+    } else {
+        Box::new(worker::Codex)
+    };
+    let mut prompt = input.to_string();
+    let mut resume = resume;
+    let mut fixes = 0;
+    let (mut outcome, mut worker, mut verification) = loop {
+        let (outcome, mut worker) = driver
+            .turn(dir, meta, &prompt, resume, &mut progress)
+            .unwrap_or_else(|e| {
+                (
+                    codex::Outcome {
+                        timed_out: e.code == 5,
+                        success: false,
+                        error: e.to_string(),
+                    },
+                    worker::failed(e.to_string()),
+                )
+            });
+        if !outcome.success {
             worker.status = "failed".into();
-            worker.notes = format!("verification failed: {e}");
-            verify::Verification {
-                verified: false,
-                files: Vec::new(),
-                out_of_scope: Vec::new(),
-                acceptance: Vec::new(),
-                diffstat: "+0 -0 in 0 files".into(),
+            if !outcome.error.is_empty()
+                && !(meta.agent == "agy" && worker.notes == "no structured_output")
+            {
+                worker.notes = result::first(&outcome.error, 300);
             }
         }
+        let verification = match verify::run(dir, meta, brief, &mut progress, outcome.timed_out) {
+            Ok(verification) => verification,
+            Err(e) => {
+                worker = worker::failed(format!("verification failed: {e}"));
+                verify::Verification {
+                    verified: false,
+                    files: Vec::new(),
+                    out_of_scope: Vec::new(),
+                    acceptance: Vec::new(),
+                    diffstat: "+0 -0 in 0 files".into(),
+                }
+            }
+        };
+        if verification.verified
+            || !outcome.success
+            || !["done", "partial"].contains(&worker.status.as_str())
+            || fixes >= meta.auto_fix
+        {
+            break (outcome, worker, verification);
+        }
+        prompt = fix_prompt(&verification);
+        fixes += 1;
+        meta.rounds += 1;
+        // Persist the human-readable prompt as well as the round before resuming.
+        fs::write(dir.join(format!("fix-{}.md", meta.rounds)), &prompt)?;
+        paths::write_json(&dir.join("meta.json"), meta)?;
+        resume = true;
     };
+    match driver.finish(&mut progress) {
+        Ok(Some(message)) => {
+            worker.status = "blocked".into();
+            worker.notes = message;
+        }
+        Ok(None) => {}
+        Err(e) => {
+            outcome.success = false;
+            outcome.timed_out |= e.code == 5;
+            if outcome.error.is_empty() {
+                outcome.error = e.to_string();
+            }
+            if worker.notes != "no structured_output" || outcome.timed_out {
+                worker = worker::failed(outcome.error.clone());
+            }
+        }
+    }
     if !meta.branch.is_empty() {
         if let Err(e) = commit_task(meta, brief) {
             worker.status = "failed".into();
@@ -349,12 +497,10 @@ fn execute(
         questions: worker.questions,
         tokens: progress.status.tokens.clone(),
         seconds: start.elapsed().as_secs(),
+        rounds: meta.rounds,
         worktree: meta.worktree.clone(),
         branch: meta.branch.clone(),
     };
-    paths::write_json(&dir.join("meta.json"), meta)?;
-    paths::write_json(&dir.join("result.json"), &result)?;
-    ledger::append(home, &result, meta)?;
     let error_lower = outcome.error.to_lowercase();
     let code = if outcome.timed_out {
         5
@@ -386,9 +532,64 @@ fn execute(
         "failed"
     }
     .into();
-    progress.finish()?;
-    println!("{}", serde_json::to_string(&result)?);
+    publish(home, dir, meta, &result, code, &mut progress)?;
     Ok(code)
+}
+
+fn publish(
+    home: &Path,
+    dir: &Path,
+    meta: &Meta,
+    result: &result::Result,
+    code: i32,
+    progress: &mut Progress,
+) -> Res<()> {
+    paths::write_json(&dir.join("meta.json"), meta)?;
+    paths::write_json(&dir.join("result.json"), result)?;
+    ledger::append(home, result, meta)?;
+    progress.finish()?;
+    // Publish the exit code last so wait never observes an unfinished result.
+    paths::write_json(&dir.join("exit.json"), &code)?;
+    println!("{}", serde_json::to_string(result)?);
+    Ok(())
+}
+
+struct FailedWorker(Option<Error>);
+impl worker::Worker for FailedWorker {
+    fn turn(
+        &mut self,
+        _: &Path,
+        _: &mut Meta,
+        _: &str,
+        _: bool,
+        _: &mut Progress,
+    ) -> Res<(codex::Outcome, result::Worker)> {
+        Err(self.0.take().unwrap())
+    }
+}
+
+fn fix_prompt(verification: &verify::Verification) -> String {
+    let mut prompt = String::from(
+        "Verification failed. Fix the following issues inside the brief's allowed files.\n",
+    );
+    if verification.files.is_empty() {
+        prompt.push_str("The edit task has an empty diff.\n");
+    }
+    for acceptance in &verification.acceptance {
+        if !acceptance.passed {
+            prompt.push_str(&format!(
+                "\nFailing acceptance command: {}\nOutput tail:\n{}\n",
+                acceptance.command, acceptance.tail
+            ));
+        }
+    }
+    if !verification.out_of_scope.is_empty() {
+        prompt.push_str(&format!(
+            "\nout_of_scope paths (revert these changes):\n{}\n",
+            verification.out_of_scope.join("\n")
+        ));
+    }
+    prompt
 }
 
 fn commit_task(meta: &Meta, brief: &Brief) -> Res<()> {
