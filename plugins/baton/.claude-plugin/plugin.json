@@ -1,6 +1,6 @@
 {
   "name": "baton",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Claude Code leads, Codex and Antigravity work: briefs in, compact JSON results out, live progress in the agent panel, routing by task difficulty and each subscription's remaining quota",
   "author": {
     "name": "Shiran Yu"
