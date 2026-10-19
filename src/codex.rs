@@ -127,21 +127,24 @@ pub fn run(
         "web_search=\"disabled\"",
         "-c",
         "features.apps=false",
-        "-s",
-        if meta.mode == "read" {
-            "read-only"
-        } else {
-            "workspace-write"
-        },
-        "-C",
-        &meta.worktree,
     ]);
-    command
-        .arg("--output-schema")
-        .arg(dir.join("schema.json"))
-        .arg("-o")
-        .arg(&last)
-        .args(["--json", "-"]);
+    let sandbox = if meta.mode == "read" {
+        "read-only"
+    } else {
+        "workspace-write"
+    };
+    if resume {
+        // `codex exec resume` takes neither -s, -C nor -o: the sandbox goes through config, the
+        // working directory is the process cwd, and the final message is read from the events.
+        command.args(["-c", &format!("sandbox_mode=\"{sandbox}\"")]);
+    } else {
+        command.args(["-s", sandbox, "-C", &meta.worktree]);
+    }
+    command.arg("--output-schema").arg(dir.join("schema.json"));
+    if !resume {
+        command.arg("-o").arg(&last);
+    }
+    command.args(["--json", "-"]);
     scrub(&mut command, &meta.task);
     command
         .current_dir(&meta.worktree)
@@ -193,6 +196,7 @@ pub fn run(
     let prior = progress.status.tokens.clone();
     let start = Instant::now();
     let mut counted = BTreeSet::new();
+    let mut final_message = String::new();
     let mut error = String::new();
     let mut failed_event = false;
     let mut timed_out = false;
@@ -244,6 +248,11 @@ pub fn run(
                                 if event["type"] == "item.completed" {
                                     progress
                                         .log(&format!("$ {last}  (exit {})", item["exit_code"]))?;
+                                }
+                            }
+                            "item.completed" if event["item"]["type"] == "agent_message" => {
+                                if let Some(text) = event["item"]["text"].as_str() {
+                                    final_message = text.to_string();
                                 }
                             }
                             "turn.completed" => {
@@ -304,6 +313,10 @@ pub fn run(
         if exited.is_some() && disconnected {
             break;
         }
+    }
+    // With --output-schema the last agent message is the result; `exec resume` has no -o.
+    if !last.exists() && !final_message.is_empty() {
+        fs::write(&last, &final_message)?;
     }
     Ok(Outcome {
         timed_out,

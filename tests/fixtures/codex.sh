@@ -3,14 +3,21 @@ set -eu
 resume=no
 if [ "${2-}" = resume ]; then resume=yes; fi
 output=
+schema=
 previous=
 read_only=no
 for arg in "$@"; do
+    # like the real CLI (0.163): `exec resume` rejects -s, -C and -o
+    if [ "$resume" = yes ]; then
+        case "$arg" in -s|-C|-o) printf "error: unexpected argument '%s' found\n" "$arg" >&2; exit 2 ;; esac
+        case "$previous:$arg" in '-c:sandbox_mode="read-only"') read_only=yes ;; esac
+    fi
     if [ "$previous" = '-o' ]; then output=$arg; fi
+    if [ "$previous" = '--output-schema' ]; then schema=$arg; fi
     if [ "$previous" = '-s' ] && [ "$arg" = read-only ]; then read_only=yes; fi
     previous=$arg
 done
-taskdir=${output%/*}
+if [ -n "$output" ]; then taskdir=${output%/*}; else taskdir=${schema%/*}; fi
 printf '%s' "$$" > "$taskdir/worker.pid"
 printf '%s\n' "$@" > "$taskdir/argv-$resume.txt"
 env > "$taskdir/environment.txt"
@@ -55,13 +62,16 @@ case "$read_only:$original" in
 esac
 case "$input" in *FAKE_OUT_OF_SCOPE*) printf '%s\n' outside > outside.txt ;; esac
 printf '%s\n' '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"cargo test\"","aggregated_output":"ok","exit_code":0,"status":"completed"}}'
+case "$input" in
+    *FAKE_INVALID*) final='this is not JSON' ;;
+    *FAKE_DECISION*) final='{"status":"needs_decision","files_changed":[],"acceptance":[],"notes":"Choose one","questions":["Which approach?"]}' ;;
+    *) final='{"status":"done","files_changed":["invented.txt"],"acceptance":[],"notes":"Finished.","questions":[]}' ;;
+esac
+escaped=$(printf '%s' "$final" | sed 's/\\/\\\\/g; s/"/\\"/g')
 printf '%s\n' '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Finished the requested work."}}'
+printf '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"%s"}}\n' "$escaped"
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":190369,"cached_input_tokens":156288,"cache_write_input_tokens":0,"output_tokens":5927,"reasoning_output_tokens":512}}'
 case "$input" in
     *FAKE_FAIL_EVENT*) printf '%s\n' '{"type":"turn.failed","error":{"message":"worker turn failed"}}' ;;
 esac
-case "$input" in
-    *FAKE_INVALID*) printf '%s' 'this is not JSON' > "$output" ;;
-    *FAKE_DECISION*) printf '%s' '{"status":"needs_decision","files_changed":[],"acceptance":[],"notes":"Choose one","questions":["Which approach?"]}' > "$output" ;;
-    *) printf '%s' '{"status":"done","files_changed":["invented.txt"],"acceptance":[],"notes":"Finished.","questions":[]}' > "$output" ;;
-esac
+if [ -n "$output" ]; then printf '%s' "$final" > "$output"; fi

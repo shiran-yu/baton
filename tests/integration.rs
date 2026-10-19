@@ -188,7 +188,7 @@ fn run_lean_profile_result_resume_and_accept() {
             .unwrap()
             .lines()
             .count(),
-        6
+        7 // thread, turn, command start/end, two agent messages, turn end
     );
     let ps = f.call(&["ps", "--json"]);
     code(&ps, 0);
@@ -206,12 +206,16 @@ fn run_lean_profile_result_resume_and_accept() {
         .output()
         .unwrap();
     code(&fixed, 0);
+    // `codex exec resume` takes neither -s, -C nor -o (real CLI 0.163; the fake rejects them too):
+    // the sandbox goes through -c and the result comes from the last agent message
     let resume_args = fs::read_to_string(task.join("argv-yes.txt")).unwrap();
+    let fresh = args.strip_prefix("exec\n").unwrap();
+    let common = &fresh[..fresh.find("-s\n").unwrap()];
     assert_eq!(
         resume_args,
         format!(
-            "exec\nresume\nfake-thread-123\n{}",
-            args.strip_prefix("exec\n").unwrap()
+            "exec\nresume\nfake-thread-123\n{common}-c\nsandbox_mode=\"workspace-write\"\n--output-schema\n{}\n--json\n-\n",
+            task.join("schema.json").display()
         )
     );
     assert_eq!(

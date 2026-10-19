@@ -478,7 +478,7 @@ fn full_doctor_auth_presence_hooks_versions_and_usage() {
     .unwrap();
     let text = String::from_utf8(f.call(&["doctor"]).stdout).unwrap();
     for expected in [
-        "baton: 0.1.0",
+        concat!("baton: ", env!("CARGO_PKG_VERSION")),
         "fake-codex",
         "fake-agy",
         "claude: not installed",
