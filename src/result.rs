@@ -40,6 +40,10 @@ pub struct Meta {
     pub model: String,
     pub effort: String,
     pub mode: String,
+    #[serde(default, rename = "type")]
+    pub task_type: String,
+    #[serde(default)]
+    pub difficulty: u8,
     pub base: String,
     pub base_commit: String,
     pub base_branch: String,

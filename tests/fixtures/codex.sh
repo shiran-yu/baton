@@ -4,8 +4,10 @@ resume=no
 if [ "${2-}" = resume ]; then resume=yes; fi
 output=
 previous=
+read_only=no
 for arg in "$@"; do
     if [ "$previous" = '-o' ]; then output=$arg; fi
+    if [ "$previous" = '-s' ] && [ "$arg" = read-only ]; then read_only=yes; fi
     previous=$arg
 done
 taskdir=${output%/*}
@@ -26,7 +28,8 @@ esac
 printf '%s\n' '{"type":"thread.started","thread_id":"fake-thread-123"}' '{"type":"turn.started"}'
 printf '%s\n' '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"cargo test\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}'
 original=$(cat "$taskdir/input-no.txt")
-case "$original" in
+case "$read_only:$original" in
+    yes:*) ;;
     *FAKE_NO_EDIT*) ;;
     *)
         mkdir -p src

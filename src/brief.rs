@@ -6,6 +6,7 @@ pub struct Brief {
     pub goal: String,
     pub files: Vec<String>,
     pub commands: Vec<String>,
+    pub title: Option<String>,
 }
 
 pub fn lint(text: &str) -> Res<()> {
@@ -32,6 +33,11 @@ pub fn lint(text: &str) -> Res<()> {
 impl Brief {
     pub fn parse(text: String) -> Res<Self> {
         lint(&text)?;
+        Self::parse_for_route(text)
+    }
+
+    // Routing must inspect risky briefs so it can hand them back to the lead.
+    pub fn parse_for_route(text: String) -> Res<Self> {
         let mut sections: BTreeMap<String, Vec<&str>> = BTreeMap::new();
         let mut heading = String::new();
         let mut fence: Option<(char, usize)> = None;
@@ -64,9 +70,10 @@ impl Brief {
         }
         let goal = sections["Goal"]
             .iter()
-            .find(|l| !l.trim().is_empty())
-            .map(|l| l.trim().to_string())
-            .unwrap_or_default();
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         if goal.is_empty() {
             return Err(Error::usage("## Goal must not be empty"));
         }
@@ -97,13 +104,80 @@ impl Brief {
                 open = Some((c, line.chars().take_while(|x| *x == c).count()));
             }
         }
+        let title = sections.get("Title").map(|lines| lines.join(" "));
         Ok(Self {
             text,
             goal,
             files,
             commands,
+            title,
         })
     }
+
+    pub fn subject(&self, task: &str) -> String {
+        let title = self.title.as_deref().filter(|s| !s.trim().is_empty());
+        let plain = strip_markdown(title.unwrap_or(&self.goal));
+        let text = if title.is_some() {
+            plain.as_str()
+        } else {
+            let end = plain.char_indices().find_map(|(i, c)| {
+                (matches!(c, '.' | '!' | '?')
+                    && plain[i + c.len_utf8()..]
+                        .chars()
+                        .next()
+                        .is_none_or(char::is_whitespace))
+                .then_some(i + c.len_utf8())
+            });
+            &plain[..end.unwrap_or(plain.len())]
+        };
+        let subject = format!("baton {task}: {text}");
+        if subject.chars().count() > 72 {
+            format!(
+                "{}…",
+                subject.chars().take(71).collect::<String>().trim_end()
+            )
+        } else {
+            subject
+        }
+    }
+}
+
+fn strip_markdown(text: &str) -> String {
+    let mut plain = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '`' | '*' | '~' | '#' | '>' | '[' => {}
+            '!' if chars.peek() == Some(&'[') => {}
+            ']' if chars.peek() == Some(&'(') => {
+                chars.next();
+                let mut depth = 1;
+                for c in chars.by_ref() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            '_' if plain.ends_with(char::is_alphanumeric)
+                && chars.peek().is_some_and(|c| c.is_alphanumeric()) =>
+            {
+                plain.push(c)
+            }
+            '_' | ']' => {}
+            '\\' => {
+                if let Some(c) = chars.next() {
+                    plain.push(c);
+                }
+            }
+            _ => plain.push(c),
+        }
+    }
+    plain.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // '*' and '?' never cross a directory; '**/' also matches zero directories.
@@ -173,5 +247,27 @@ mod tests {
         assert_eq!(brief.files, ["src/**"]);
         assert!(Brief::parse("## Goal\nOops".into()).is_err());
         assert!(lint("KEYFOB").is_err());
+    }
+}
+
+#[cfg(test)]
+mod subject_tests {
+    use super::*;
+    fn brief(goal: &str, title: &str) -> Brief {
+        Brief::parse(format!("## Title\n{title}\n## Goal\n{goal}\n## Files\nnone\n## Forbidden\nNone\n## Acceptance\n")).unwrap()
+    }
+    #[test]
+    fn title_or_first_sentence_stripped_and_truncated() {
+        assert_eq!(
+            brief("**Add** a [`widget`](src/widget.rs).\nTest it too.", "").subject("id"),
+            "baton id: Add a widget."
+        );
+        assert_eq!(
+            brief("Other goal.", "__Improve__ `the_widget` [docs](docs/a.md)").subject("id"),
+            "baton id: Improve the_widget docs"
+        );
+        let subject = brief("Other goal.", &"é".repeat(100)).subject("id");
+        assert_eq!(subject.chars().count(), 72);
+        assert!(subject.ends_with('…'));
     }
 }

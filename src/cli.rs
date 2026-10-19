@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 pub enum Cli {
     Run(Run),
+    Route(Route),
+    Scorecard { since: Option<u64>, json: bool },
+    Review { task: String, by: String },
     Supervise(String),
     Wait { task: String, max: u64 },
     Fix { task: String, notes: PathBuf },
@@ -26,6 +29,30 @@ pub struct Run {
     pub timeout: u64,
     pub no_worktree: bool,
     pub json: bool,
+    pub task_type: Option<String>,
+    pub difficulty: Option<u8>,
+}
+
+pub struct Route {
+    pub brief: PathBuf,
+    pub task_type: Option<String>,
+    pub difficulty: Option<u8>,
+    pub json: bool,
+}
+
+fn parse_type(value: String) -> Res<String> {
+    if !crate::route::TYPES.contains(&value.as_str()) {
+        return Err(Error::usage("invalid --type"));
+    }
+    Ok(value)
+}
+
+fn parse_difficulty(value: String) -> Res<u8> {
+    value
+        .parse()
+        .ok()
+        .filter(|d| (1..=4).contains(d))
+        .ok_or_else(|| Error::usage("--difficulty must be 1 through 4"))
 }
 
 pub fn task_id(id: &str) -> Res<()> {
@@ -55,8 +82,8 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
         "--help" | "-h" | "help" => Ok(Cli::Help),
         "run" => {
             let agent = args.next().unwrap_or_default();
-            if !["codex", "agy"].contains(&agent.as_str()) {
-                return Err(Error::usage("worker must be codex or agy"));
+            if !["codex", "agy", "auto"].contains(&agent.as_str()) {
+                return Err(Error::usage("worker must be codex, agy or auto"));
             }
             let mut run = Run {
                 model: if agent == "agy" {
@@ -76,10 +103,16 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                 timeout: 1800,
                 no_worktree: false,
                 json: false,
+                task_type: None,
+                difficulty: None,
             };
             while let Some(flag) = args.next() {
                 match flag.as_str() {
                     "--brief" => run.brief = value(&mut args, &flag)?.into(),
+                    "--type" => run.task_type = Some(parse_type(value(&mut args, &flag)?)?),
+                    "--difficulty" => {
+                        run.difficulty = Some(parse_difficulty(value(&mut args, &flag)?)?)
+                    }
                     "--mode" => run.mode = value(&mut args, &flag)?,
                     "--effort" => run.effort = value(&mut args, &flag)?,
                     "--model" => run.model = value(&mut args, &flag)?,
@@ -123,6 +156,57 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                 return Err(Error::usage("invalid model or base ref"));
             }
             Ok(Cli::Run(run))
+        }
+        "route" => {
+            let mut route = Route {
+                brief: PathBuf::new(),
+                task_type: None,
+                difficulty: None,
+                json: false,
+            };
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--brief" => route.brief = value(&mut args, &flag)?.into(),
+                    "--type" => route.task_type = Some(parse_type(value(&mut args, &flag)?)?),
+                    "--difficulty" => {
+                        route.difficulty = Some(parse_difficulty(value(&mut args, &flag)?)?)
+                    }
+                    "--json" => route.json = true,
+                    _ => return Err(Error::usage(format!("unknown option: {flag}"))),
+                }
+            }
+            if route.brief.as_os_str().is_empty() {
+                return Err(Error::usage("--brief is required"));
+            }
+            Ok(Cli::Route(route))
+        }
+        "scorecard" => {
+            let mut since = None;
+            let mut json = false;
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--since" => {
+                        since = Some(value(&mut args, &flag)?.parse().map_err(|_| {
+                            Error::usage("--since must be a non-negative number of days")
+                        })?)
+                    }
+                    "--json" => json = true,
+                    _ => return Err(Error::usage(format!("unknown option: {flag}"))),
+                }
+            }
+            Ok(Cli::Scorecard { since, json })
+        }
+        "review" => {
+            let task = value(&mut args, "task")?;
+            task_id(&task)?;
+            if args.next().as_deref() != Some("--by") {
+                return Err(Error::usage("usage: baton review <task> --by <codex|agy>"));
+            }
+            let by = value(&mut args, "--by")?;
+            if !["codex", "agy"].contains(&by.as_str()) || args.next().is_some() {
+                return Err(Error::usage("usage: baton review <task> --by <codex|agy>"));
+            }
+            Ok(Cli::Review { task, by })
         }
         "wait" | "__supervise" => {
             let task = value(&mut args, "task")?;

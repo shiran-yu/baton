@@ -782,3 +782,245 @@ fn detached_setup_failure_is_a_waitable_result() {
         .unwrap()
         .contains("already exists"));
 }
+
+fn cache_usage(f: &Fixture, codex_used: f64) {
+    fs::create_dir_all(&f.home).unwrap();
+    fs::write(f.home.join("usage.json"), serde_json::json!({
+        "codex":{"windows":[{"name":"5h","used":codex_used,"pace":0.4},{"name":"weekly","used":0.0,"pace":0.1}]},
+        "agy":{"windows":[{"id":"gemini-weekly","used":0.0,"pace":0.1}]}
+    }).to_string()).unwrap();
+}
+
+#[test]
+fn route_json_human_output_overrides_and_cached_quotas() {
+    let f = Fixture::new();
+    cache_usage(&f, 0.1);
+    let brief = f.brief("route", "Build a widget", "true");
+    let route = || {
+        f.command()
+            .args(["route", "--brief"])
+            .arg(&brief)
+            .args(["--difficulty", "2", "--json"])
+            .output()
+            .unwrap()
+    };
+    let out = route();
+    code(&out, 0);
+    let r = json(&out);
+    assert_eq!(r["choice"]["agent"], "codex");
+    assert_eq!(r["choice"]["effort"], "medium");
+    assert_eq!(r["runner_up"]["agent"], "agy");
+    assert_eq!(r["choice"]["cost"], 120_000.0);
+    let out = f
+        .command()
+        .args(["route", "--brief"])
+        .arg(&brief)
+        .args(["--type", "mechanical", "--difficulty", "1"])
+        .output()
+        .unwrap();
+    code(&out, 0);
+    let human = String::from_utf8(out.stdout).unwrap();
+    assert!(human.contains("mechanical D1"));
+    assert!(human.contains("pace 0.4") || human.contains("pace 0.1"));
+    assert!(human.contains("runner-up:"));
+    cache_usage(&f, 0.96);
+    assert_eq!(json(&route())["choice"]["agent"], "agy");
+    fs::remove_file(f.home.join("usage.json")).unwrap();
+    assert_eq!(json(&route())["choice"]["agent"], "claude");
+    assert!(
+        !f.home.join("tasks").exists(),
+        "routing must not start workers"
+    );
+    for extra in [
+        ["--type", "oops"],
+        ["--difficulty", "0"],
+        ["--difficulty", "5"],
+    ] {
+        let out = f
+            .command()
+            .args(["route", "--brief"])
+            .arg(&brief)
+            .args(extra)
+            .output()
+            .unwrap();
+        code(&out, 2);
+    }
+}
+
+#[test]
+fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
+    for (agent, codex_used) in [("codex", 0.1), ("agy", 0.96)] {
+        let f = Fixture::new();
+        cache_usage(&f, codex_used);
+        let brief = f.brief("auto", "Build a widget", "test -f src/output.txt");
+        let out = f
+            .command()
+            .args(["run", "auto", "--task", "auto", "--brief"])
+            .arg(&brief)
+            .args(["--difficulty", "2", "--type", "refactor", "--json"])
+            .output()
+            .unwrap();
+        code(&out, 0);
+        assert_eq!(json(&out)["agent"], agent);
+        assert_eq!(json(&out)["effort"], "medium");
+        let notes = f.dir.join("fix.md");
+        fs::write(&notes, "Append a correction.").unwrap();
+        code(
+            &f.command()
+                .args(["fix", "auto", "--notes"])
+                .arg(notes)
+                .output()
+                .unwrap(),
+            0,
+        );
+        let ledger = fs::read_to_string(f.home.join("ledger.jsonl")).unwrap();
+        let rows: Vec<Value> = ledger
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row["type"], "refactor");
+            assert_eq!(row["difficulty"], 2);
+            assert!(row["timestamp"].is_u64());
+        }
+        assert_eq!(rows[0]["rounds"], 0);
+        assert_eq!(rows[1]["rounds"], 1);
+        let card = f.call(&["scorecard", "--since", "1", "--json"]);
+        code(&card, 0);
+        assert_eq!(json(&card)["rows"][0]["first_pass_verified_rate"], 0.5);
+    }
+}
+
+#[test]
+fn risky_no_acceptance_and_d4_auto_return_to_lead_without_task_state() {
+    let f = Fixture::new();
+    for (id, goal, command) in [("risk", "Read secrets", "true"), ("none", "Build it", "")] {
+        let brief = f.brief(id, goal, command);
+        let out = f
+            .command()
+            .args(["route", "--brief"])
+            .arg(&brief)
+            .arg("--json")
+            .output()
+            .unwrap();
+        code(&out, 0);
+        assert_eq!(json(&out)["choice"]["agent"], "claude");
+        let out = f
+            .command()
+            .args(["run", "auto", "--brief"])
+            .arg(&brief)
+            .arg("--json")
+            .output()
+            .unwrap();
+        code(&out, 6);
+        assert_eq!(json(&out)["status"], "needs_decision");
+        assert_eq!(json(&out)["agent"], "claude");
+        assert!(!f.home.exists());
+    }
+    let brief = f.brief("d4", "Build it", "true");
+    let out = f
+        .command()
+        .args(["run", "auto", "--brief"])
+        .arg(brief)
+        .args(["--difficulty", "4", "--json"])
+        .output()
+        .unwrap();
+    code(&out, 6);
+    assert!(!f.home.exists());
+}
+
+#[test]
+fn scorecard_reads_fixture_empty_and_legacy_ledgers() {
+    let f = Fixture::new();
+    let out = f.call(&["scorecard", "--json"]);
+    code(&out, 0);
+    assert_eq!(json(&out), serde_json::json!({"rows":[],"total_tokens":{}}));
+    fs::create_dir_all(&f.home).unwrap();
+    fs::write(
+        f.home.join("ledger.jsonl"),
+        include_str!("fixtures/ledger/scorecard.jsonl"),
+    )
+    .unwrap();
+    let out = f.call(&["scorecard", "--json"]);
+    code(&out, 0);
+    let card = json(&out);
+    assert_eq!(card["total_tokens"]["codex"], 1490);
+    assert_eq!(card["total_tokens"]["agy"], 60);
+    let implement = card["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["type"] == "implement")
+        .unwrap();
+    assert_eq!(implement["runs"], 3);
+    assert_eq!(implement["median_tokens"], 360.0);
+    let out = f.call(&["scorecard", "--since", "1", "--json"]);
+    code(&out, 0);
+    assert_eq!(json(&out)["rows"], serde_json::json!([]));
+    code(&f.call(&["scorecard", "--since", "-1"]), 2);
+    let out = f.call(&["scorecard"]);
+    code(&out, 0);
+    assert!(String::from_utf8(out.stdout)
+        .unwrap()
+        .contains("codex: 1490 total tokens"));
+}
+
+#[test]
+fn review_has_separate_artifacts_and_classified_ledger_entry() {
+    let f = Fixture::new();
+    code(&f.run("source", "Build it", "true"), 0);
+    let out = f.call(&["review", "source", "--by", "codex"]);
+    code(&out, 0);
+    let reviewed = json(&out);
+    assert_eq!(reviewed["verified"], true);
+    let review_task = reviewed["task"].as_str().unwrap();
+    assert_ne!(review_task, "source");
+    assert!(fs::read_to_string(f.task(review_task).join("argv-no.txt"))
+        .unwrap()
+        .contains("read-only"));
+    assert!(
+        fs::read_to_string(f.task(review_task).join("review-prompt.md"))
+            .unwrap()
+            .contains("+hello")
+    );
+    assert_eq!(f.read("source", "result.json")["verified"], true);
+    let entries = fs::read_to_string(f.home.join("ledger.jsonl")).unwrap();
+    let entry: Value = serde_json::from_str(entries.lines().last().unwrap()).unwrap();
+    assert_eq!(entry["type"], "review");
+    assert_eq!(entry["difficulty"], 3);
+    assert_eq!(entry["rounds"], 0);
+}
+
+#[test]
+fn commit_subjects_use_title_or_first_sentence_on_run_and_accept() {
+    for title in ["", "## Title\n**Improve** the `widget`\n"] {
+        let f = Fixture::new();
+        let brief = f.brief(
+            "subject",
+            "**Build** a [widget](src/widget.rs).\nAdd checks too.",
+            "true",
+        );
+        let text = fs::read_to_string(&brief).unwrap();
+        fs::write(&brief, format!("{title}{text}")).unwrap();
+        let out = f
+            .command()
+            .args(["run", "codex", "--task", "subject", "--brief"])
+            .arg(&brief)
+            .arg("--json")
+            .output()
+            .unwrap();
+        code(&out, 0);
+        let expected = if title.is_empty() {
+            "baton subject: Build a widget."
+        } else {
+            "baton subject: Improve the widget"
+        };
+        assert_eq!(
+            f.git(&["log", "-1", "--format=%s", "baton/subject"]),
+            expected
+        );
+        code(&f.call(&["accept", "subject", "--squash"]), 0);
+        assert_eq!(f.git(&["log", "-1", "--format=%s"]), expected);
+    }
+}
