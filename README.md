@@ -73,15 +73,11 @@ claude plugin marketplace add shiran-yu/baton
 claude plugin install baton@baton            # also installs OpenAI's codex plugin
 ```
 
-Then build the binary once (Rust 1.80 or later):
-
-```sh
-git clone https://github.com/shiran-yu/baton && cd baton
-cargo build --release && mkdir -p ~/.local/share/baton/bin && cp target/release/baton ~/.local/share/baton/bin/
-```
-
-You also need the worker CLIs, logged in: [Codex CLI](https://developers.openai.com/codex/cli)
-(`codex login`) and [Antigravity CLI](https://antigravity.google/docs/cli/) (`agy`, then sign in).
+Then ask Claude Code to "set up baton" (the `setup` skill), or run `baton setup` yourself. It
+builds or downloads the binary, installs the [Codex CLI](https://developers.openai.com/codex/cli)
+and the [Antigravity CLI](https://antigravity.google/docs/cli/) if they are missing and tells you the one login command for each, grants agy
+read and write on baton's worktree directory only, mirrors your plugins into both, and checks
+everything with one tiny call each. Every install and config change asks first.
 It is also part of [my-develop-plugins](https://github.com/shiran-yu/my-develop-plugins).
 
 ## Use
@@ -104,10 +100,19 @@ of commands that must pass). See the [lead's playbook](plugins/baton/skills/bato
 
 ## Status
 
-0.1: Codex and Antigravity drivers, worktrees, verification, auto-fix, detach and wait, quota for
-all three, the agent-panel rows. Next: routing from the ledger, `baton sync` (mirror Claude Code
-plugins into Codex and agy with hook conversion), `baton setup` for a fresh machine. Design:
-[DESIGN.md](DESIGN.md).
+0.1, built by baton itself: after the first core, every part was briefed by Claude Code,
+implemented by Codex in its own worktree, verified by baton and reviewed before merging.
+
+| Part | State |
+|---|---|
+| Codex and Antigravity drivers, worktrees, verification, auto-fix, detach and wait | done |
+| Quota for all three (`baton usage`), status-line and agent-panel rows | done |
+| Routing by difficulty and quota, ledger and scorecard | done; priors still being tuned from the ledger |
+| `baton sync` (Claude Code plugins into Codex and agy, with hook conversion) | done; trading plugins stay out of agy until their guards are proven there |
+| `baton setup` and release binaries for macOS and Linux (x86_64, arm64) | done; first tagged release pending |
+| Live token counts for Codex while it works | in progress |
+
+Design: [DESIGN.md](DESIGN.md).
 
 ## Licence
 
