@@ -78,7 +78,6 @@ builds or downloads the binary, installs the [Codex CLI](https://developers.open
 and the [Antigravity CLI](https://antigravity.google/docs/cli/) if they are missing and tells you the one login command for each, grants agy
 read and write on baton's worktree directory only, mirrors your plugins into both, and checks
 everything with one tiny call each. Every install and config change asks first.
-It is also part of [my-develop-plugins](https://github.com/shiran-yu/my-develop-plugins).
 
 ## Use
 
