@@ -1,4 +1,5 @@
 {
   "name": "baton",
-  "description": "Call Claude Code or Codex from Antigravity through baton: briefs in, compact JSON results out, quota-aware routing"
+  "description": "Call Claude Code or Codex from Antigravity through baton: briefs in, compact JSON results out, quota-aware routing",
+  "version": "0.1.1"
 }

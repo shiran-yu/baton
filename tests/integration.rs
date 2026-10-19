@@ -1023,7 +1023,7 @@ fn review_has_separate_artifacts_and_classified_ledger_entry() {
     let entries = fs::read_to_string(f.home.join("ledger.jsonl")).unwrap();
     let entry: Value = serde_json::from_str(entries.lines().last().unwrap()).unwrap();
     assert_eq!(entry["type"], "review");
-    assert_eq!(entry["difficulty"], 3);
+    assert_eq!(entry["difficulty"], 2); // src/** alone is an ordinary scope
     assert_eq!(entry["rounds"], 0);
 }
 

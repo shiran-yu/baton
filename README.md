@@ -100,7 +100,7 @@ of commands that must pass). See the [lead's playbook](plugins/baton/skills/bato
 
 ## Status
 
-0.1, built by baton itself: after the first core, every part was briefed by Claude Code,
+0.1.1, built by baton itself: after the first core, every part was briefed by Claude Code,
 implemented by Codex in its own worktree, verified by baton and reviewed before merging.
 
 | Part | State |
@@ -110,7 +110,7 @@ implemented by Codex in its own worktree, verified by baton and reviewed before 
 | Routing by difficulty and quota, ledger and scorecard | done; priors still being tuned from the ledger |
 | `baton sync` (Claude Code plugins into Codex and agy, with hook conversion) | done; trading plugins stay out of agy until their guards are proven there |
 | `baton setup` and release binaries for macOS and Linux (x86_64, arm64) | done; first tagged release pending |
-| Live token counts for Codex while it works | in progress |
+| Live token counts and quota for Codex while it works; quota and auth failures stop routing to that agent | done |
 
 Design: [DESIGN.md](DESIGN.md).
 

@@ -110,10 +110,13 @@ pub fn classify(
     };
     let task_type = task_type.unwrap_or(inferred).to_string();
     let mut d = 2_i32;
-    if brief.files.len() > 6 || brief.files.iter().any(|p| p.contains("**")) {
+    // A wide scope or a very long goal makes a first-pass success less likely. One or two
+    // recursive globs (`src/**`, `tests/**`) are an ordinary scope, and a detailed goal with
+    // acceptance commands is a well-specified task, so the thresholds are generous.
+    if brief.files.len() > 6 || brief.files.iter().filter(|p| p.contains("**")).count() > 2 {
         d += 1;
     }
-    if brief.goal.split_whitespace().count() > 120 {
+    if brief.goal.split_whitespace().count() > 300 {
         d += 1;
     }
     if ["mechanical", "docs"].contains(&task_type.as_str()) {
@@ -392,7 +395,7 @@ mod tests {
         }
         let b = brief("Add a widget", "- `README.md`\n- docs/**", "true");
         let c = classify(&b, None, None).unwrap();
-        assert_eq!((c.task_type.as_str(), c.difficulty), ("implement", 3));
+        assert_eq!((c.task_type.as_str(), c.difficulty), ("implement", 2)); // one recursive glob is ordinary
         let c = classify(&b, Some("bugfix"), Some(1)).unwrap();
         assert_eq!((c.task_type.as_str(), c.difficulty), ("bugfix", 1));
         assert!(classify(&b, Some("invalid"), None).is_err());
@@ -470,10 +473,10 @@ mod tests {
             .difficulty,
             3
         );
-        for (count, expected) in [(120, 3), (121, 4)] {
+        for (count, expected) in [(300, 2), (301, 3)] {
             let goal = (0..count).map(|_| "word").collect::<Vec<_>>().join("\n");
             assert_eq!(
-                classify(&brief(&goal, "src/**", "true"), None, None)
+                classify(&brief(&goal, "src/**\ntests/**", "true"), None, None)
                     .unwrap()
                     .difficulty,
                 expected
