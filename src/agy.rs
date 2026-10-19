@@ -251,12 +251,6 @@ impl Agy {
                     }
                 } else if !result["structured_output"].is_object() {
                     worker::failed("no structured_output")
-                } else if result["response"].as_str() == Some("") {
-                    Report {
-                        status: "blocked".into(),
-                        notes: "empty response".into(),
-                        questions: Vec::new(),
-                    }
                 } else {
                     worker::parse_report(&result["structured_output"].to_string())
                 };
