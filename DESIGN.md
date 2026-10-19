@@ -1,0 +1,198 @@
+# baton — design
+
+Claude Code leads. Codex CLI and Antigravity CLI (`agy`) do bounded work. Any of the three can call
+the others through one binary, `baton`, written in Rust. Efficiency rules every decision: the lead
+reads a few hundred tokens per delegated task, never a worker's transcript.
+
+## 1. Flow
+
+1. The lead writes a brief (§3) and calls `baton route` (§8), or names the worker.
+2. The lead dispatches through a thin subagent (`baton:codex`, `baton:agy`, §7) so the run shows
+   up as a row in Claude Code's agent panel, or runs `baton run` in a background Bash task.
+3. `baton run` starts the worker with its lean profile (§5) in a fresh git worktree, streams
+   progress to a status file, and when the worker stops it verifies the claim itself: the diff
+   is not empty for an edit task, every changed path is allowed by the brief, and the acceptance
+   commands pass when baton reruns them.
+4. `baton run` prints one result object (§4) and appends a ledger line (§9).
+5. Optionally a second worker reviews read-only (`baton review`), returning findings in the same
+   contract.
+6. The lead reads the result, the diff stat and the findings, then accepts (`baton accept` merges
+   the worktree branch), sends fixes (`baton fix`), or takes over. Two fix rounds at most.
+
+## 2. Commands
+
+```
+baton run <codex|agy|claude> --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh]
+          [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json]
+baton fix <task> --notes FILE          send the fix list back to the same worker (Codex resumes its
+                                       thread; agy starts fresh with the notes and the current diff)
+baton review <task> --by <codex|agy|claude>   read-only review of a task's diff
+baton accept <task> [--squash]         merge the task branch into the base branch, remove the worktree
+baton drop <task>                      remove the worktree and branch
+baton show <task> [--diff|--log|--brief]
+baton ps [--json]                      running and recent tasks
+baton usage [--json] [--refresh]       remaining quota of all three, cached 5 minutes
+baton route --brief FILE [--json]      recommended worker, model and effort, with the reason
+baton ledger [--since DAYS] / baton scorecard   per worker, per task type
+baton statusline subagent              Claude Code subagentStatusLine handler (stdin -> rows)
+baton statusline line                  one compact usage line for a main status line
+baton doctor [--scan] [--fix]          versions, logins, lean profiles; --scan re-captures every
+                                       `--help` of claude, codex and agy into reference/help/
+baton sync [--dry-run] [--to codex,agy]   mirror installed Claude Code plugins into Codex and agy
+baton hook-adapt --from <codex|agy> -- CMD...   run a Claude-format hook under another host
+baton setup                            fresh machine: install codex and agy, log in, write profiles,
+                                       register marketplaces, sync, self-test
+```
+
+Exit codes: 0 done, 2 usage error, 3 worker claimed success but verification failed,
+4 auth or quota problem, 5 timeout, 6 needs a decision (see `questions`).
+
+## 3. Brief
+
+Markdown with these level-2 headings, in any order. `baton run` refuses a brief that lacks one.
+
+| Heading | Content |
+|---|---|
+| `## Goal` | what done means, in a few sentences |
+| `## Files` | paths or globs the worker may change; `none` for a read-only task |
+| `## Forbidden` | things it must not do |
+| `## Acceptance` | shell commands, one per line in a code block; all must exit 0 |
+| `## Context` (optional) | pointers the worker needs; paths, not pasted file contents |
+
+Risk lint: a brief that mentions `keyfob`, order placement or account endpoints of the trading
+venues, or asks to read secrets is refused for codex and agy (exit 2). Those stay with the lead.
+
+## 4. Result contract
+
+Every worker returns, and `baton run` prints, this object (schema in `plugins/baton/schema/result.json`):
+
+```json
+{
+  "task": "t-20261019-1432-ab12", "agent": "codex", "model": "gpt-6.1-sol", "effort": "medium",
+  "status": "done | partial | blocked | needs_decision | failed",
+  "verified": true,
+  "files_changed": ["src/x.rs"], "diffstat": "+120 -40 in 3 files",
+  "out_of_scope": [],
+  "acceptance": [{"command": "cargo test", "passed": true, "tail": "test result: ok. 42 passed"}],
+  "notes": "one or two sentences from the worker",
+  "questions": [],
+  "tokens": {"input": 190369, "cached": 156288, "output": 5927},
+  "seconds": 312, "worktree": "~/.local/share/baton/wt/t-...", "branch": "baton/t-..."
+}
+```
+
+`verified` is baton's own check (§1.3), not the worker's claim. `status` from the worker is kept;
+a `done` with failed verification becomes exit code 3.
+
+## 5. Lean worker profiles
+
+Measured: the user's Codex config adds 37 plugins' skills (44 KB, ~11k tokens) to every call;
+skipping it took one call's uncached input from 14,292 to 2,459 tokens. Details in
+`reference/codex-prompt-anatomy.md` and `reference/agy.md`.
+
+**codex**
+```
+codex exec --ignore-user-config -m gpt-6.1-sol -c model_reasoning_effort="<effort>"
+  -c model_reasoning_summary="none" -c model_verbosity="low" -c web_search="disabled"
+  -c features.apps=false -s workspace-write -C <worktree>
+  --output-schema <schema> -o <task>/last.json --json -        # brief on stdin
+codex exec resume <thread_id> ... -                            # baton fix
+```
+No `--ephemeral`: the rollout under `~/.codex/sessions/` carries live `token_count` events and
+`rate_limits`, which baton tails for progress and quota. `--ignore-user-config` also drops the
+user's hooks, so codex workers run without the trading guard: briefs that touch trading are
+refused by the risk lint (§3).
+
+**agy**
+```
+agy -p --output-format stream-json --json-schema <schema> --model <slug> --effort <effort>
+  --mode accept-edits --sandbox --print-timeout <secs>s --agent baton-worker
+  --disable-slash-commands                                       # brief on stdin
+```
+Run with cwd = worktree. `baton-worker` is a custom agent installed by `baton setup` with a short
+system prompt and only the tools a worker needs. A headless agy run soft-denies tools that would
+prompt: it exits 0 and prints a notice on stderr, so baton treats any stderr soft-deny notice as
+`blocked` and always checks the diff. No `--conversation` reuse: a resumed headless conversation
+grew to 27k input tokens with no cache hit and took 728 s.
+
+**claude** (when codex or agy call the lead's model)
+```
+claude -p --model <sonnet|opus> --effort <effort> --tools "Read,Grep,Glob,Edit,Write,Bash"
+  --strict-mcp-config --disable-slash-commands --no-session-persistence
+  --exclude-dynamic-system-prompt-sections --max-turns <n>
+  --output-format stream-json --json-schema <schema>
+```
+`--bare` would be leaner but needs an API key; a subscription login cannot use it.
+
+Environment: workers get a scrubbed environment (no `*_API_KEY`, `*_TOKEN`, `*_SECRET`,
+`KEYFOB*`), `HOME`, `PATH`, `LANG`, and `BATON_TASK`.
+
+## 6. Status file and live progress
+
+`$BATON_HOME/tasks/<id>/status.json`, rewritten at most twice a second:
+
+```json
+{"task": "...", "agent": "codex", "model": "gpt-6.1-sol", "effort": "medium", "phase": "working",
+ "commands": 9, "last": "cargo test -q", "files": 3, "tests": "12/14",
+ "tokens": {"input": 80211, "cached": 70100, "output": 2100},
+ "quota": "5h 14% · wk 3%", "started": 1792416557, "updated": 1792416800}
+```
+
+Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lines go to
+`log.txt` and to stdout, so a background Bash task or `claude attach` shows them live.
+
+## 7. Claude Code integration
+
+- Thin subagents `agents/codex.md` and `agents/agy.md`: `model: haiku`, `tools: Bash`,
+  `maxTurns: 3`. The body says: run exactly `baton run <agent> --brief <path> --task <id>`
+  from the prompt, wait, and return its final JSON line unchanged.
+- The plugin's `settings.json` sets `subagentStatusLine` to `baton statusline subagent`. For each
+  panel row whose `agentType` is `baton:codex` or `baton:agy`, it finds the task id in the row's
+  `description` (`baton t-...`) and prints `{"id": <row id>, "content": "codex · medium · 3 files ·
+  tests 12/14 · 80k tok · 5h 14%"}`. Other rows are left untouched (no output for them).
+- Skill `baton`: the lead's playbook (brief template, when to delegate, routing, review loop).
+- Skill `baton-reference`: the command references of all three CLIs, read on demand.
+- `hooks/hooks.json`: SessionStart runs `baton doctor --quick` (a few file stats, no network,
+  under 20 ms) and prints one line only when something is missing.
+
+## 8. Routing
+
+`baton route` scores each candidate (worker, model, effort):
+
+    score = p_success(type, difficulty) × value(difficulty) − cost_tokens / remaining_tokens × pace
+
+- `type`: implement, refactor, bugfix, test, docs, mechanical, review, research (from the brief's
+  verbs and file kinds; the lead can pass `--type`).
+- `difficulty` D1–D4 from the number of files, whether acceptance commands exist, and ambiguity
+  markers; the lead can pass `--difficulty`.
+- `p_success` starts from priors (benchmarks and design intent) and is updated from the ledger
+  with a Beta(2,2) prior per (worker, type, difficulty): first-pass verified successes.
+- `cost_tokens`: median tokens of past tasks at that difficulty, else a prior.
+- `pace` = used fraction of the window ÷ elapsed fraction of the window (≥1 means burning faster
+  than the window refills), per window (5 h and weekly), the worse of the two.
+- Hard rules: risky briefs go to the lead; D4 or no acceptance commands go to the lead; a worker
+  whose remaining quota is below the task's expected cost is skipped.
+
+## 9. Ledger
+
+`$BATON_HOME/ledger.jsonl`, one line per run, fix and review: task, agent, model, effort, type,
+difficulty, status, verified, rounds, tokens, seconds, quota before and after. `baton scorecard`
+aggregates it.
+
+## 10. Plugins in three hosts
+
+- One plugin directory serves all three: `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`
+  (with `"hooks": "./hooks/codex.json"` when the Claude hooks use `modules` or `ask`) and a
+  root `plugin.json` for agy.
+- `baton sync` reads `~/.claude/plugins/installed_plugins.json`, and for each of the user's own
+  plugins installs it into Codex (`codex plugin marketplace add` / `codex plugin add`) and into agy
+  (`agy plugin install <dir>`), generating the missing manifest and converting hooks:
+  `modules` are dropped (Claude Code only), `ask` decisions become `deny` under Codex, and the
+  hook command is wrapped in `baton hook-adapt --from <host>` so a Claude-format hook script sees
+  Claude-format input under any host. Trading plugins are mirrored to agy only after their guard
+  passes the adapter's tests.
+
+## 11. State
+
+`BATON_HOME` defaults to `~/.local/share/baton`: `tasks/<id>/` (brief.md, status.json, log.txt,
+events.jsonl, result.json), `wt/<id>/` worktrees, `usage.json`, `ledger.jsonl`.
