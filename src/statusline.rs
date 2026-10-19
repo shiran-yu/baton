@@ -176,7 +176,7 @@ pub fn subagent(home: &Path, input: &Value) -> Res<String> {
             parts.push(effort.into());
         }
         for (key, label) in [("files", "files"), ("commands", "cmds")] {
-            if let Some(n) = status[key].as_u64() {
+            if let Some(n) = status[key].as_u64().filter(|n| *n > 0) {
                 parts.push(format!("{n} {label}"));
             }
         }
@@ -184,11 +184,12 @@ pub fn subagent(home: &Path, input: &Value) -> Res<String> {
             parts.push(format!("tests {tests}"));
         }
         let tokens = &status["tokens"];
-        if tokens["input"].is_u64() || tokens["output"].is_u64() {
-            let total = tokens["input"]
-                .as_u64()
-                .unwrap_or(0)
-                .saturating_add(tokens["output"].as_u64().unwrap_or(0));
+        let total = tokens["input"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_add(tokens["output"].as_u64().unwrap_or(0));
+        if total > 0 {
+            // Codex reports usage only when a turn ends; leave it out until then
             parts.push(if total >= 1000 {
                 format!("{}k tok", total / 1000)
             } else {
