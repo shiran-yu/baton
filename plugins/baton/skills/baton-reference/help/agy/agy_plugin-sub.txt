@@ -1,0 +1,16 @@
+=== agy plugin list --help ===
+Error: unknown list option "--help": only --json is supported
+=== agy plugin import --help ===
+Error: unknown import source or invalid path: --help
+=== agy plugin install --help ===
+Error: install target must be a directory: --help
+=== agy plugin uninstall --help ===
+Uninstalled plugin "--help"
+=== agy plugin enable --help ===
+Error: plugin "--help" not found or invalid
+=== agy plugin disable --help ===
+Error: plugin "--help" not found or invalid
+=== agy plugin validate --help ===
+Error: unknown validate argument "--help": usage is validate [path] [--strict] [--json]
+=== agy plugin link --help ===
+Error: link requires marketplace name and target

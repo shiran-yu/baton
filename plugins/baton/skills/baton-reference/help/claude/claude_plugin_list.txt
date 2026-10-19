@@ -1,0 +1,11 @@
+Usage: claude plugin list [options]
+
+List installed plugins
+
+Options:
+  --available           Include available plugins from marketplaces (requires
+                        --json)
+  --data-size [plugin]  Measure each installed plugin's saved data directory, or
+                        only the named plugin's (requires --json)
+  -h, --help            Display help for command
+  --json                Output as JSON

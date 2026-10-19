@@ -1,0 +1,10 @@
+Usage: claude plugin configure [options] <plugin>
+
+Show a plugin's options and which are unset, or save values from stdin with
+--values-stdin
+
+Options:
+  -h, --help      Display help for command
+  --json          Output as JSON
+  --values-stdin  Read option values from stdin as a JSON object of single-line
+                  strings; options left out keep their values

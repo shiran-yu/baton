@@ -1,0 +1,4 @@
+=== agy help --help ===
+Error: unknown subcommand: --help
+=== agy help help ===
+Error: unknown subcommand: --help

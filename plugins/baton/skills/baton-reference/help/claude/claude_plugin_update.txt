@@ -1,0 +1,26 @@
+Usage: claude plugin update [options] <plugin>
+
+Update a plugin to the latest version (restart required to apply)
+
+Options:
+  --accept-command <sha256>  Accept the marketplace-declared command (a
+                             command-source install, or the headersHelper that
+                             fetches the archive) whose sha256 a previous --json
+                             run reported as shownCommand.sha256; counts as -y
+                             for exactly that command, for that plugin and
+                             marketplace catalog, and nothing else. If either
+                             changed (a refresh that moved the catalog counts),
+                             the run refuses and reports the command again, to
+                             be shown to a person again
+  -h, --help                 Display help for command
+  --json                     Print one machine-readable result line on stdout
+                             instead of the human message (same exit codes; a
+                             marketplace-declared command is still shown and
+                             must be confirmed — pass -y when not interactive)
+  -s, --scope <scope>        Installation scope: user, project, local, managed
+                             (default: auto-detect)
+  -y, --yes                  Accept the displayed marketplace-declared command
+                             without the confirmation prompt — a changed install
+                             command, or the headersHelper command that fetches
+                             its archive (required when stdin or stdout is not a
+                             TTY)

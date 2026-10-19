@@ -1,0 +1,28 @@
+=== agy plugin --help ===
+Usage: agy plugin <command> [arguments]
+
+Commands:
+  list [--json]          List installed plugins
+  import [source]        Import plugins from gemini or claude
+  install <target>       Install a plugin (supports plugin[@marketplace])
+  uninstall <name>       Uninstall a plugin
+  enable <name>          Enable a plugin
+  disable <name>         Disable a plugin
+  validate [path] [--strict] [--json]
+                         Check a plugin's manifest and files
+  link <mp> <target>     Generate link to a marketplace
+  help                   Show this help
+=== agy help plugin ===
+Usage: agy plugin <command> [arguments]
+
+Commands:
+  list [--json]          List installed plugins
+  import [source]        Import plugins from gemini or claude
+  install <target>       Install a plugin (supports plugin[@marketplace])
+  uninstall <name>       Uninstall a plugin
+  enable <name>          Enable a plugin
+  disable <name>         Disable a plugin
+  validate [path] [--strict] [--json]
+                         Check a plugin's manifest and files
+  link <mp> <target>     Generate link to a marketplace
+  help                   Show this help

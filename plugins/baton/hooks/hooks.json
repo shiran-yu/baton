@@ -1,0 +1,16 @@
+{
+  "description": "baton: one fast check at session start; prints a line only when a worker CLI, login or lean profile is missing",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/baton\" doctor --quick",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

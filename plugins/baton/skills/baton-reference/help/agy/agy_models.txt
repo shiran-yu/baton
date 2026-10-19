@@ -1,0 +1,16 @@
+=== agy models --help ===
+Usage: agy models [flags]
+
+List available models
+
+Flags:
+  -h      Show help
+  --help  Show help
+=== agy help models ===
+Usage: agy models [flags]
+
+List available models
+
+Flags:
+  -h      Show help
+  --help  Show help

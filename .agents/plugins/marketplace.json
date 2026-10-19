@@ -1,0 +1,20 @@
+{
+  "name": "baton-codex",
+  "interface": {
+    "displayName": "baton"
+  },
+  "plugins": [
+    {
+      "name": "baton",
+      "source": {
+        "source": "local",
+        "path": "./plugins/baton"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

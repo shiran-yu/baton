@@ -1,0 +1,22 @@
+=== agy install --help ===
+Usage: agy install [flags]
+
+Configure environment paths and shell settings
+
+Flags:
+  --dir           Custom directory target to configure PATH for
+  -h              Show help
+  --help          Show help
+  --skip-aliases  Bypasses shell profile alias purging
+  --skip-path     Bypasses shell profile PATH appending
+=== agy help install ===
+Usage: agy install [flags]
+
+Configure environment paths and shell settings
+
+Flags:
+  --dir           Custom directory target to configure PATH for
+  -h              Show help
+  --help          Show help
+  --skip-aliases  Bypasses shell profile alias purging
+  --skip-path     Bypasses shell profile PATH appending

@@ -1,0 +1,4 @@
+{
+  "description": "No Codex hooks: baton's SessionStart check is for Claude Code.",
+  "hooks": {}
+}

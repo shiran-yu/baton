@@ -1,0 +1,18 @@
+=== agy remote-control --help ===
+Usage: agy remote-control <subcommand>
+
+Available subcommands:
+  start    Register and start the remote-control daemon
+  status   Show the daemon's status
+  stop     Stop the daemon and unregister it
+
+Run "agy remote-control <subcommand> --help" for flags.
+=== agy help remote-control ===
+Usage: agy remote-control <subcommand>
+
+Available subcommands:
+  start    Register and start the remote-control daemon
+  status   Show the daemon's status
+  stop     Stop the daemon and unregister it
+
+Run "agy remote-control <subcommand> --help" for flags.

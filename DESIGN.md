@@ -13,10 +13,14 @@ reads a few hundred tokens per delegated task, never a worker's transcript.
    progress to a status file, and when the worker stops it verifies the claim itself: the diff
    is not empty for an edit task, every changed path is allowed by the brief, and the acceptance
    commands pass when baton reruns them.
-4. `baton run` prints one result object (§4) and appends a ledger line (§9).
-5. Optionally a second worker reviews read-only (`baton review`), returning findings in the same
+4. If verification fails, baton itself sends the failing acceptance output back to the same worker
+   (Codex resumes its thread; agy gets the next turn on its open stream session, where the prompt
+   cache is warm) and verifies again, up to `--auto-fix` rounds (default 1). The lead only ever
+   sees the final state.
+5. `baton run` prints one result object (§4) and appends a ledger line (§9).
+6. Optionally a second worker reviews read-only (`baton review`), returning findings in the same
    contract.
-6. The lead reads the result, the diff stat and the findings, then accepts (`baton accept` merges
+7. The lead reads the result, the diff stat and the findings, then accepts (`baton accept` merges
    the worktree branch), sends fixes (`baton fix`), or takes over. Two fix rounds at most.
 
 ## 2. Commands
@@ -24,6 +28,9 @@ reads a few hundred tokens per delegated task, never a worker's transcript.
 ```
 baton run <codex|agy|claude> --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh]
           [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json]
+          [--auto-fix N] [--detach]
+baton wait <task> [--max SECS]         block until the task ends or SECS pass; prints the result
+                                       line, or one progress line and exit 7 while it still runs
 baton fix <task> --notes FILE          send the fix list back to the same worker (Codex resumes its
                                        thread; agy starts fresh with the notes and the current diff)
 baton review <task> --by <codex|agy|claude>   read-only review of a task's diff
@@ -37,7 +44,7 @@ baton ledger [--since DAYS] / baton scorecard   per worker, per task type
 baton statusline subagent              Claude Code subagentStatusLine handler (stdin -> rows)
 baton statusline line                  one compact usage line for a main status line
 baton doctor [--scan] [--fix]          versions, logins, lean profiles; --scan re-captures every
-                                       `--help` of claude, codex and agy into reference/help/
+                                       `--help` of claude, codex and agy into plugins/baton/skills/baton-reference/help/
 baton sync [--dry-run] [--to codex,agy]   mirror installed Claude Code plugins into Codex and agy
 baton hook-adapt --from <codex|agy> -- CMD...   run a Claude-format hook under another host
 baton setup                            fresh machine: install codex and agy, log in, write profiles,
@@ -45,7 +52,7 @@ baton setup                            fresh machine: install codex and agy, log
 ```
 
 Exit codes: 0 done, 2 usage error, 3 worker claimed success but verification failed,
-4 auth or quota problem, 5 timeout, 6 needs a decision (see `questions`).
+4 auth or quota problem, 5 timeout, 6 needs a decision (see `questions`), 7 still running (`wait`).
 
 ## 3. Brief
 
@@ -88,7 +95,7 @@ a `done` with failed verification becomes exit code 3.
 
 Measured: the user's Codex config adds 37 plugins' skills (44 KB, ~11k tokens) to every call;
 skipping it took one call's uncached input from 14,292 to 2,459 tokens. Details in
-`reference/codex-prompt-anatomy.md` and `reference/agy.md`.
+`plugins/baton/skills/baton-reference/codex-prompt-anatomy.md` and `plugins/baton/skills/baton-reference/agy.md`.
 
 **codex**
 ```
@@ -103,17 +110,40 @@ No `--ephemeral`: the rollout under `~/.codex/sessions/` carries live `token_cou
 user's hooks, so codex workers run without the trading guard: briefs that touch trading are
 refused by the risk lint (§3).
 
-**agy**
-```
-agy -p --output-format stream-json --json-schema <schema> --model <slug> --effort <effort>
-  --mode accept-edits --sandbox --print-timeout <secs>s --agent baton-worker
-  --disable-slash-commands                                       # brief on stdin
-```
-Run with cwd = worktree. `baton-worker` is a custom agent installed by `baton setup` with a short
-system prompt and only the tools a worker needs. A headless agy run soft-denies tools that would
-prompt: it exits 0 and prints a notice on stderr, so baton treats any stderr soft-deny notice as
-`blocked` and always checks the diff. No `--conversation` reuse: a resumed headless conversation
-grew to 27k input tokens with no cache hit and took 728 s.
+**agy** (measured details in `plugins/baton/skills/baton-reference/agy.md`)
+
+- Lean custom agent written into the worktree as `.agents/agents/baton-worker.md` (excluded from
+  git via `.git/info/exclude`): `excludeDefaultComponents: true`, `inheritCustomizations: false`,
+  `subagent: false`, and a YAML tool list. The default agent costs 11,906 input tokens for a
+  one-line prompt; a lean agent with no tools costs 572, and each tool adds about 550.
+- Edit tasks get `[view_file, list_dir, find_by_name, grep_search, write_to_file,
+  replace_file_content, multi_replace_file_content, finish]`; read tasks drop the three write
+  tools. No `run_command`: headless agy soft-denies shell commands that are not allowlisted, and
+  baton reruns the acceptance commands itself, so the worker never needs a shell. `finish` is
+  required, or `--json-schema` returns no `structured_output`.
+- One long-lived process per task, so fix rounds hit the prompt cache (agy caches only once the
+  context passes ~17k tokens; `--conversation` resume reloads everything uncached):
+  ```
+  agy --input-format stream-json --output-format stream-json --agent baton-worker
+      --model gemini-3.8-flash --effort <low|medium|high> --mode accept-edits
+      --json-schema <schema> --print-timeout <secs>s  < (baton writes {"event":"user",...} lines)
+  ```
+  cwd = worktree, stdin always a pipe baton controls (with no credentials agy waits 60 s on a TTY).
+  Close stdin to end the session.
+- Soft-deny looks like success (exit 0, `status: SUCCESS`, often `response: ""`). Treat as
+  `blocked` when any of: `result.denied_actions` non-empty, a `step_update` with `state: ERROR`
+  and "permission check failed", the stderr line `jetski: no output produced`, or an empty
+  response. Always require `structured_output` to be present.
+- Timeouts: `--print-timeout`, then SIGTERM, then SIGKILL. agy ignores SIGALRM; a timed-out
+  run exits 0 with partial output, so baton checks `status`.
+- Pin `--model`; never `-c` (it picks the last conversation for the cwd and races between
+  parallel runs); never an unknown `--mode` (it only warns and runs a default turn).
+- Quota: `agy -p /usage --output-format json` is free and returns `remaining_fraction` and reset
+  time per bucket: `gemini-weekly` (Gemini Models) and `3p-weekly` (Claude and GPT models). The
+  Claude 4.6 and GPT-OSS models leave agy on 2026-11-02; after that only `gemini-3.8-flash`
+  (low, medium, high) remains, and routing must stop offering the `3p` bucket.
+- Global hooks in `~/.gemini/config/hooks.json` (for example Orca's status hooks) run on every
+  worker call and add process start-up time; `baton doctor` reports them.
 
 **claude** (when codex or agy call the lead's model)
 ```

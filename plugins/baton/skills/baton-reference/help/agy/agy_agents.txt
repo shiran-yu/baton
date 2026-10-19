@@ -1,0 +1,16 @@
+=== agy agents --help ===
+Usage: agy agent [flags]
+
+List available agents
+
+Flags:
+  -h      Show help
+  --help  Show help
+=== agy help agents ===
+Usage: agy agent [flags]
+
+List available agents
+
+Flags:
+  -h      Show help
+  --help  Show help

@@ -1,0 +1,13 @@
+#!/bin/sh
+# baton launcher: the release build of this checkout, else one installed by `baton setup`
+# (~/.local/share/baton/bin/baton), else a clear message. No work before exec: this runs on every
+# subagent status refresh.
+case "$0" in */*) here=${0%/*} ;; *) here=. ;; esac
+for bin in "$here/../../../target/release/baton" "${BATON_HOME:-$HOME/.local/share/baton}/bin/baton"; do
+  [ -x "$bin" ] && exec "$bin" "$@"
+done
+case "$1" in
+  statusline|doctor) exit 0 ;;   # stay silent in the status line and the session-start check
+esac
+echo "baton: binary not built yet. Run: cargo build --release --manifest-path \"$here/../../../Cargo.toml\"" >&2
+exit 2

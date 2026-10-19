@@ -1,0 +1,3 @@
+Usage: claude logs <id|name>
+
+  Print the background session's recent terminal output. Part of the session name works in place of the id. Put a name with spaces in quotes.

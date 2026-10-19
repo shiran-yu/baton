@@ -1,0 +1,10 @@
+Usage: claude plugin enable [options] <plugin>
+
+Enable a disabled plugin
+
+Options:
+  -h, --help           Display help for command
+  --json               Print one machine-readable result line on stdout instead
+                       of the human message (same exit codes)
+  -s, --scope <scope>  Installation scope: user, project, local (default:
+                       auto-detect)

@@ -1,0 +1,6 @@
+Usage: claude auth logout [options]
+
+Log out from your Anthropic account
+
+Options:
+  -h, --help  Display help for command

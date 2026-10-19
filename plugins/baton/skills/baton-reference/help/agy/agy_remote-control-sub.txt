@@ -1,0 +1,26 @@
+=== agy remote-control start --help ===
+Usage: agy remote-control start [flags]
+
+Register and start the remote-control daemon
+
+Flags:
+  -h         Show help
+  --help     Show help
+  --name     Set this machine's instance name shown in Remote Control
+  --session  Register the daemon login-scoped (stops at logout) instead of starting at boot
+=== agy remote-control status --help ===
+Usage: agy remote-control status [flags]
+
+Show the daemon's status
+
+Flags:
+  -h      Show help
+  --help  Show help
+=== agy remote-control stop --help ===
+Usage: agy remote-control stop [flags]
+
+Stop the daemon and unregister it
+
+Flags:
+  -h      Show help
+  --help  Show help

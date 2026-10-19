@@ -1,0 +1,36 @@
+{
+  "name": "baton",
+  "version": "0.1.0",
+  "description": "Call Claude Code or Antigravity from Codex through baton: briefs in, compact JSON results out, quota-aware routing",
+  "author": {
+    "name": "Shiran Yu",
+    "url": "https://github.com/shiran-yu"
+  },
+  "homepage": "https://github.com/shiran-yu/baton",
+  "repository": "https://github.com/shiran-yu/baton",
+  "license": "CC-BY-NC-SA-4.0",
+  "keywords": [
+    "claude-code",
+    "antigravity",
+    "orchestration"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/codex.json",
+  "interface": {
+    "displayName": "baton",
+    "shortDescription": "Hand work to Claude Code or Antigravity",
+    "longDescription": "Write a brief, hand it to another agent CLI through baton, and read back a verified JSON result; baton tracks every subscription's remaining quota.",
+    "developerName": "Shiran Yu",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/shiran-yu/baton",
+    "defaultPrompt": [
+      "Ask Claude Code to review this diff through baton.",
+      "Show baton usage for all three agents."
+    ],
+    "brandColor": "#B45309"
+  }
+}

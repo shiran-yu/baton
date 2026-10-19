@@ -1,0 +1,16 @@
+{
+ "organizationName": "Example Org",
+ "accessToken": null,
+ "refreshToken": null,
+ "expiresAt": null,
+ "refreshTokenExpiresAt": null,
+ "scopes": null,
+ "seenAt": 1792418477,
+ "usage": {
+  "fh": 36,
+  "fh_reset": 1792425000,
+  "sd": 7,
+  "sd_reset": 1792954800,
+  "fetched_at": 1792418477
+ }
+}

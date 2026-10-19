@@ -1,0 +1,18 @@
+=== agy mic-serve --help ===
+Usage: agy mic-serve [flags]
+
+Serve this machine's microphone to a CLI on another host
+
+Flags:
+  --addr  Address to listen on; keep it on loopback (default 127.0.0.1:4713)
+  -h      Show help
+  --help  Show help
+=== agy help mic-serve ===
+Usage: agy mic-serve [flags]
+
+Serve this machine's microphone to a CLI on another host
+
+Flags:
+  --addr  Address to listen on; keep it on loopback (default 127.0.0.1:4713)
+  -h      Show help
+  --help  Show help

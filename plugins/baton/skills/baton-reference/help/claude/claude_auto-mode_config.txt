@@ -1,0 +1,7 @@
+Usage: claude auto-mode config [options]
+
+Print the effective auto mode config as JSON: your settings where set, defaults
+otherwise
+
+Options:
+  -h, --help  Display help for command

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "baton",
+  "description": "Claude Code leads, Codex and Antigravity work: one Rust binary for briefs, verified results, live progress and quota-aware routing",
+  "owner": {
+    "name": "Shiran Yu"
+  },
+  "plugins": [
+    {
+      "name": "baton",
+      "description": "Claude Code leads, Codex and Antigravity work: briefs in, compact JSON results out, live progress in the agent panel, routing by task difficulty and each subscription's remaining quota",
+      "source": "./plugins/baton",
+      "category": "development"
+    },
+    {
+      "name": "codex",
+      "description": "OpenAI's official Codex plugin for Claude Code (/codex:review, /codex:adversarial-review, /codex:rescue); baton depends on it",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/openai/codex-plugin-cc.git",
+        "path": "plugins/codex",
+        "sha": "db52e28f4d9ded852ab3942cea316258ae4ef346"
+      },
+      "category": "development"
+    }
+  ]
+}

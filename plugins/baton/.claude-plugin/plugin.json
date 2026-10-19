@@ -1,0 +1,22 @@
+{
+  "name": "baton",
+  "version": "0.1.0",
+  "description": "Claude Code leads, Codex and Antigravity work: briefs in, compact JSON results out, live progress in the agent panel, routing by task difficulty and each subscription's remaining quota",
+  "author": {
+    "name": "Shiran Yu"
+  },
+  "homepage": "https://github.com/shiran-yu/baton",
+  "repository": "https://github.com/shiran-yu/baton",
+  "license": "CC-BY-NC-SA-4.0",
+  "keywords": [
+    "codex",
+    "antigravity",
+    "agy",
+    "orchestration",
+    "multi-agent",
+    "subagents"
+  ],
+  "dependencies": [
+    "codex"
+  ]
+}
