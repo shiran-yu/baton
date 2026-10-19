@@ -11,8 +11,9 @@ use std::{
     time::Duration,
 };
 
-const IDS: [&str; 9] = [
+const IDS: [&str; 10] = [
     "binary",
+    "git-credentials",
     "codex-install",
     "agy-install",
     "codex-login",
@@ -306,6 +307,7 @@ fn steps(home: &Path) -> Res<Vec<Step>> {
     binary_commands.push(format!("ln -s {} {}", quote(&binary), quote(&link)));
     let descriptions = [
         "Install baton and its worker-accessible symlink",
+        "Let git use the GitHub CLI login for github.com",
         "Install Codex",
         "Install Antigravity",
         "Sign in to Codex",
@@ -317,6 +319,7 @@ fn steps(home: &Path) -> Res<Vec<Step>> {
     ];
     let commands = [
         binary_commands,
+        vec![format!("{} auth setup-git", agent("gh"))],
         vec!["curl -fsSL https://chatgpt.com/codex/install.sh | sh".into()],
         vec!["curl -fsSL https://antigravity.google/cli/install.sh | bash".into()],
         vec![format!("{codex} login --device-auth")],
@@ -346,7 +349,7 @@ fn steps(home: &Path) -> Res<Vec<Step>> {
         })
         .collect();
     let path = settings_path()?;
-    steps[5].settings_edit = Some(SettingsEdit {
+    steps[6].settings_edit = Some(SettingsEdit {
         backup: path.with_file_name("settings.json.baton-bak"),
         path,
         allow: permissions()?,
@@ -391,6 +394,24 @@ fn binary_present(home: &Path) -> Res<bool> {
 fn pending(home: &Path, id: &str) -> Res<bool> {
     Ok(match id {
         "binary" => !binary_present(home)?,
+        "git-credentials" => {
+            installed("gh")
+                && probe("gh", &["auth", "status"]).is_ok()
+                && process::capture(
+                    Command::new(process::executable("git")).args([
+                        "config",
+                        "--global",
+                        "--get-all",
+                        "credential.https://github.com.helper",
+                    ]),
+                    Duration::from_secs(10),
+                )
+                .map_or(true, |text| {
+                    !text
+                        .lines()
+                        .any(|line| line.contains("gh auth git-credential"))
+                })
+        }
         "codex-install" => !installed("codex"),
         "agy-install" => !installed("agy"),
         "codex-login" => !installed("codex") || probe("codex", &["login", "status"]).is_err(),
