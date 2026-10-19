@@ -113,10 +113,11 @@ refused by the risk lint (§3).
 
 **agy** (measured details in `plugins/baton/skills/baton-reference/agy.md`)
 
-- Managed agy worktrees live under `$BATON_AGY_WT_DIR`, default `$TMPDIR/baton-wt`
-  (fallback `/tmp/baton-wt`), outside the home directory: agy resolves a trusted home ancestor
-  as its workspace and otherwise misses the worktree’s lean agent and relative paths. Codex
-  worktrees stay under `$BATON_HOME/wt`; accept/drop use the recorded path for either location.
+- Managed agy worktrees live under `$BATON_AGY_WT_DIR`, default `/tmp/baton-wt` (canonicalised, so
+  `/private/tmp/baton-wt` on macOS): agy resolves its workspace to a trusted ancestor such as `~`,
+  which would hide the worktree's lean agent; and outside a trusted workspace agy soft-denies even
+  reads, so `baton setup` adds `read_file(<root>/)` and `write_file(<root>/)` to agy's
+  `permissions.allow`. Codex worktrees stay under `$BATON_HOME/wt/`.
 - Lean custom agent written into the worktree as `.agents/agents/baton-worker.md` (excluded from
   git via `.git/info/exclude`): `excludeDefaultComponents: true`, `inheritCustomizations: false`,
   `subagent: false`, and a YAML tool list. The default agent costs 11,906 input tokens for a

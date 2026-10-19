@@ -291,16 +291,7 @@ fn start(home: &Path, run: cli::Run) -> Res<i32> {
     };
     let worktree = if managed {
         if run.agent == "agy" {
-            std::env::var_os("BATON_AGY_WT_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::env::var_os("TMPDIR")
-                        .filter(|v| !v.is_empty())
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| PathBuf::from("/tmp"))
-                        .join("baton-wt")
-                })
-                .join(&task)
+            agy_wt_root().join(&task)
         } else {
             home.join("wt").join(&task)
         }
@@ -721,4 +712,16 @@ fn manage(home: &Path, task: &str, accept: Option<bool>) -> Res<i32> {
         }
     );
     Ok(0)
+}
+
+/// Root for agy worktrees: outside the home directory (agy resolves its workspace to a trusted
+/// ancestor such as `~`) and fixed, so `baton setup` can grant agy read/write on exactly this path.
+/// `/tmp` resolves to `/private/tmp` on macOS.
+pub fn agy_wt_root() -> PathBuf {
+    let root = std::env::var_os("BATON_AGY_WT_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp/baton-wt"));
+    let _ = std::fs::create_dir_all(&root);
+    std::fs::canonicalize(&root).unwrap_or(root)
 }

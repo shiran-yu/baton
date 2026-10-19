@@ -68,7 +68,7 @@ impl Fixture {
             .env("BATON_AGY", &self.agy)
             .env("CODEX_HOME", self.dir.join("codex-home"))
             .env("TMPDIR", &self.dir)
-            .env_remove("BATON_AGY_WT_DIR")
+            .env("BATON_AGY_WT_DIR", self.dir.join("agy-wt"))
             .env("USER", "baton-test-user")
             .env("SHELL", "/bin/sh")
             .env("LC_ALL", "C")
@@ -467,7 +467,7 @@ fn agy_verified_lean_agent_and_exact_exclusion() {
     );
     assert_eq!(f.read("agy", "status.json")["commands"], 1);
     assert_eq!(f.read("agy", "status.json")["last"], "write_to_file");
-    let wt = f.dir.join("baton-wt/agy");
+    let wt = fs::canonicalize(f.dir.join("agy-wt")).unwrap().join("agy");
     let agent = fs::read_to_string(wt.join(".agents/agents/baton-worker.md")).unwrap();
     assert_eq!(agent, "---\nname: baton-worker\ndescription: Bounded baton worker\nexcludeDefaultComponents: true\ninheritCustomizations: false\nsubagent: false\ntools:\n  - view_file\n  - list_dir\n  - find_by_name\n  - grep_search\n  - write_to_file\n  - replace_file_content\n  - multi_replace_file_content\n  - finish\n---\nStay inside the files listed in the brief. Never run commands; baton runs the acceptance commands. Call finish with the result object.\n");
     let exclude = fs::read_to_string(f.repo.join(".git/info/exclude")).unwrap();
