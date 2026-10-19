@@ -10,6 +10,9 @@ pub enum Cli {
     Show { task: String, view: String },
     Accept { task: String, squash: bool },
     Drop(String),
+    Usage { json: bool, refresh: bool },
+    Statusline(String),
+    Doctor { quick: bool, out: Option<PathBuf> },
     Help,
 }
 
@@ -53,6 +56,45 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
     };
     match cmd.as_str() {
         "--help" | "-h" | "help" => Ok(Cli::Help),
+        "usage" => {
+            let (mut json, mut refresh) = (false, false);
+            for flag in args {
+                match flag.as_str() {
+                    "--json" => json = true,
+                    "--refresh" => refresh = true,
+                    _ => return Err(Error::usage("usage: baton usage [--json] [--refresh]")),
+                }
+            }
+            Ok(Cli::Usage { json, refresh })
+        }
+        "statusline" => {
+            let mode = value(&mut args, "statusline")?;
+            if !["line", "subagent"].contains(&mode.as_str()) || args.next().is_some() {
+                return Err(Error::usage("usage: baton statusline <line|subagent>"));
+            }
+            Ok(Cli::Statusline(mode))
+        }
+        "doctor" => {
+            let (mut quick, mut scan, mut out) = (false, false, None);
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--quick" => quick = true,
+                    "--scan" => scan = true,
+                    "--out" => out = Some(PathBuf::from(value(&mut args, "--out")?)),
+                    _ => {
+                        return Err(Error::usage(
+                            "usage: baton doctor [--quick | --scan --out DIR]",
+                        ))
+                    }
+                }
+            }
+            if scan != out.is_some() || (quick && scan) {
+                return Err(Error::usage(
+                    "usage: baton doctor [--quick | --scan --out DIR]",
+                ));
+            }
+            Ok(Cli::Doctor { quick, out })
+        }
         "run" => {
             let agent = args.next().unwrap_or_default();
             if !["codex", "agy"].contains(&agent.as_str()) {

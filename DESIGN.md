@@ -43,8 +43,9 @@ baton route --brief FILE [--json]      recommended worker, model and effort, wit
 baton ledger [--since DAYS] / baton scorecard   per worker, per task type
 baton statusline subagent              Claude Code subagentStatusLine handler (stdin -> rows)
 baton statusline line                  one compact usage line for a main status line
-baton doctor [--scan] [--fix]          versions, logins, lean profiles; --scan re-captures every
-                                       `--help` of claude, codex and agy into plugins/baton/skills/baton-reference/help/
+baton doctor [--quick]                versions, auth-file presence, global agy hooks and usage;
+                                       --quick checks executables and writable state only
+baton doctor --scan --out DIR         capture installed CLIs and subcommands through depth 3
 baton sync [--dry-run] [--to codex,agy]   mirror installed Claude Code plugins into Codex and agy
 baton hook-adapt --from <codex|agy> -- CMD...   run a Claude-format hook under another host
 baton setup                            fresh machine: install codex and agy, log in, write profiles,
@@ -112,6 +113,10 @@ refused by the risk lint (§3).
 
 **agy** (measured details in `plugins/baton/skills/baton-reference/agy.md`)
 
+- Managed agy worktrees live under `$BATON_AGY_WT_DIR`, default `$TMPDIR/baton-wt`
+  (fallback `/tmp/baton-wt`), outside the home directory: agy resolves a trusted home ancestor
+  as its workspace and otherwise misses the worktree’s lean agent and relative paths. Codex
+  worktrees stay under `$BATON_HOME/wt`; accept/drop use the recorded path for either location.
 - Lean custom agent written into the worktree as `.agents/agents/baton-worker.md` (excluded from
   git via `.git/info/exclude`): `excludeDefaultComponents: true`, `inheritCustomizations: false`,
   `subagent: false`, and a YAML tool list. The default agent costs 11,906 input tokens for a
@@ -168,6 +173,12 @@ Environment: workers get a scrubbed environment (no `*_API_KEY`, `*_TOKEN`, `*_S
  "quota": "5h 14% · wk 3%", "started": 1792416557, "updated": 1792416800}
 ```
 
+`usage.json` stores `{fetched_at, agents: [...]}` for 300 seconds. Each agent has `windows`
+(normalized `agent`, `window`, `used`, `resets_at`, `window_secs`, `pace`) or an `error`;
+Codex rollout fallback carries `stale: true`. Fetches run in parallel; one source failure does
+not hide the others. Claude account files contribute quota fields only. `--refresh` bypasses
+the cache. Statusline handlers only read this cache and never start quota commands.
+
 Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lines go to
 `log.txt` and to stdout, so a background Bash task or `claude attach` shows them live.
 
@@ -177,8 +188,10 @@ Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lin
   `maxTurns: 3`. The body says: run exactly `baton run <agent> --brief <path> --task <id>`
   from the prompt, wait, and return its final JSON line unchanged.
 - The plugin's `settings.json` sets `subagentStatusLine` to `baton statusline subagent`. For each
-  panel row whose `agentType` is `baton:codex` or `baton:agy`, it finds the task id in the row's
-  `description` (`baton t-...`) and prints `{"id": <row id>, "content": "codex · medium · 3 files ·
+  panel row whose `agentType` is `baton:codex`, `baton:agy`, `codex` or `agy`, it finds the task
+  id in `description` or `label` (`baton t-...`), otherwise matches an unclaimed task of that
+  agent among the newest 20 status files, starting −5 s…+600 s from the row's `startTime`.
+  It prints `{"id": <row id>, "content": "codex · medium · 3 files ·
   tests 12/14 · 80k tok · 5h 14%"}`. Other rows are left untouched (no output for them).
 - Skill `baton`: the lead's playbook (brief template, when to delegate, routing, review loop).
 - Skill `baton-reference`: the command references of all three CLIs, read on demand.

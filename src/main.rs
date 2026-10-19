@@ -4,11 +4,15 @@ mod agy;
 mod brief;
 mod cli;
 mod codex;
+mod doctor;
 mod git;
 mod ledger;
 mod paths;
+mod process;
 mod result;
 mod status;
+mod statusline;
+mod usage;
 mod verify;
 mod worker;
 
@@ -99,8 +103,19 @@ fn main() {
 }
 
 fn dispatch(cli: Cli) -> Res<i32> {
+    // Hooks are best effort, including when HOME or the state directory is unavailable.
+    if let Cli::Statusline(mode) = &cli {
+        if let Ok(home) = paths::home() {
+            statusline::run(&home, mode);
+        }
+        return Ok(0);
+    }
+    if let Cli::Doctor { quick: true, .. } = cli {
+        doctor::quick();
+        return Ok(0);
+    }
     if let Cli::Help = cli {
-        println!("baton run <codex|agy> --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>");
+        println!("baton run <codex|agy> --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]");
         return Ok(0);
     }
     let home = paths::home()?;
@@ -220,6 +235,17 @@ fn dispatch(cli: Cli) -> Res<i32> {
         }
         Cli::Accept { task, squash } => manage(&home, &task, Some(squash)),
         Cli::Drop(task) => manage(&home, &task, None),
+        Cli::Usage { json, refresh } => {
+            let snapshot = usage::read(&home, refresh)?;
+            if json {
+                println!("{}", serde_json::to_string(&snapshot)?);
+            } else {
+                print!("{}", usage::table(&snapshot));
+            }
+            Ok(0)
+        }
+        Cli::Doctor { out, .. } => doctor::run(&home, out.as_deref()),
+        Cli::Statusline(_) => Ok(0),
         Cli::Help => Ok(0),
     }
 }
@@ -264,9 +290,27 @@ fn start(home: &Path, run: cli::Run) -> Res<i32> {
         String::new()
     };
     let worktree = if managed {
-        home.join("wt").join(&task)
+        if run.agent == "agy" {
+            std::env::var_os("BATON_AGY_WT_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::var_os("TMPDIR")
+                        .filter(|v| !v.is_empty())
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("/tmp"))
+                        .join("baton-wt")
+                })
+                .join(&task)
+        } else {
+            home.join("wt").join(&task)
+        }
     } else {
         root.clone()
+    };
+    let worktree = if worktree.is_absolute() {
+        worktree
+    } else {
+        root.join(worktree)
     };
     let mut meta = Meta {
         task,
@@ -316,7 +360,9 @@ fn start(home: &Path, run: cli::Run) -> Res<i32> {
 fn supervise(home: &Path, dir: &Path, meta: &mut Meta, brief: &Brief, json: bool) -> Res<i32> {
     let outcome = (|| {
         if !meta.branch.is_empty() {
-            fs::create_dir_all(home.join("wt"))?;
+            if let Some(parent) = Path::new(&meta.worktree).parent() {
+                fs::create_dir_all(parent)?;
+            }
             git::run(
                 Path::new(&meta.repo_root),
                 &[

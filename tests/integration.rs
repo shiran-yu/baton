@@ -68,6 +68,7 @@ impl Fixture {
             .env("BATON_AGY", &self.agy)
             .env("CODEX_HOME", self.dir.join("codex-home"))
             .env("TMPDIR", &self.dir)
+            .env_remove("BATON_AGY_WT_DIR")
             .env("USER", "baton-test-user")
             .env("SHELL", "/bin/sh")
             .env("LC_ALL", "C")
@@ -466,7 +467,7 @@ fn agy_verified_lean_agent_and_exact_exclusion() {
     );
     assert_eq!(f.read("agy", "status.json")["commands"], 1);
     assert_eq!(f.read("agy", "status.json")["last"], "write_to_file");
-    let wt = f.home.join("wt/agy");
+    let wt = f.dir.join("baton-wt/agy");
     let agent = fs::read_to_string(wt.join(".agents/agents/baton-worker.md")).unwrap();
     assert_eq!(agent, "---\nname: baton-worker\ndescription: Bounded baton worker\nexcludeDefaultComponents: true\ninheritCustomizations: false\nsubagent: false\ntools:\n  - view_file\n  - list_dir\n  - find_by_name\n  - grep_search\n  - write_to_file\n  - replace_file_content\n  - multi_replace_file_content\n  - finish\n---\nStay inside the files listed in the brief. Never run commands; baton runs the acceptance commands. Call finish with the result object.\n");
     let exclude = fs::read_to_string(f.repo.join(".git/info/exclude")).unwrap();
@@ -781,4 +782,38 @@ fn detached_setup_failure_is_a_waitable_result() {
         .as_str()
         .unwrap()
         .contains("already exists"));
+}
+
+#[test]
+fn agy_custom_worktree_location_accept_and_drop_from_other_cwd() {
+    let f = Fixture::new();
+    for (id, operation) in [("custom-drop", "drop"), ("custom-accept", "accept")] {
+        let out = f
+            .command()
+            .env("BATON_AGY_WT_DIR", "../custom-wt")
+            .args(["run", "agy", "--task", id, "--brief"])
+            .arg(f.brief(id, "Write a file", "test -f src/output.txt"))
+            .arg("--json")
+            .output()
+            .unwrap();
+        code(&out, 0);
+        let result = json(&out);
+        let worktree = PathBuf::from(result["worktree"].as_str().unwrap());
+        assert!(worktree.is_absolute());
+        assert_eq!(
+            fs::canonicalize(&worktree).unwrap(),
+            fs::canonicalize(f.dir.join("custom-wt").join(id)).unwrap()
+        );
+        assert!(worktree.join(".agents/agents/baton-worker.md").exists());
+        assert!(!f.home.join("wt").join(id).exists());
+        let managed = f
+            .command()
+            .current_dir(&f.dir)
+            .args([operation, id])
+            .output()
+            .unwrap();
+        code(&managed, 0);
+        assert!(!worktree.exists());
+        assert_eq!(f.read(id, "meta.json")["closed"], true);
+    }
 }
