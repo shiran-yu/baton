@@ -9,5 +9,5 @@ done
 case "$1" in
   statusline|doctor) exit 0 ;;   # stay silent in the status line and the session-start check
 esac
-echo "baton: binary not built yet. Run: cargo build --release --manifest-path \"$here/../../../Cargo.toml\"" >&2
+echo "baton: binary missing. Claude: run the baton:setup skill." >&2
 exit 2

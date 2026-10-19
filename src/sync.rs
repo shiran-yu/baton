@@ -53,7 +53,8 @@ struct Installation {
 }
 #[derive(Deserialize)]
 struct Marketplace {
-    #[serde(rename = "installLocation")]
+    // missing for marketplaces Claude Code has not cloned yet; those are dropped after loading
+    #[serde(default, rename = "installLocation")]
     location: PathBuf,
     // source is intentionally not fetched: synchronization uses the local checkout.
     #[serde(default, rename = "source")]
@@ -70,8 +71,10 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
         .join(".claude/plugins"),
     };
     let inventory: Inventory = paths::read_json(&plugins.join("installed_plugins.json"))?;
-    let marketplaces: BTreeMap<String, Marketplace> =
+    let mut marketplaces: BTreeMap<String, Marketplace> =
         paths::read_json(&plugins.join("known_marketplaces.json"))?;
+    // an empty location would resolve catalog paths against the current directory
+    marketplaces.retain(|_, m| m.location.is_absolute());
     let config: Config = if home.join("sync.json").exists() {
         paths::read_json(&home.join("sync.json"))?
     } else {

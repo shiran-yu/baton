@@ -14,6 +14,7 @@ mod quota;
 mod result;
 mod route;
 mod scorecard;
+mod setup;
 mod status;
 mod statusline;
 mod sync;
@@ -123,13 +124,14 @@ fn dispatch(cli: Cli) -> Res<i32> {
         return Ok(0);
     }
     if let Cli::Help = cli {
-        println!("baton run <codex|agy|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton sync [--dry-run] [--to codex,agy] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
+        println!("baton run <codex|agy|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton setup [--plan [--json] | --apply ID[,ID...] [--yes]]\nbaton sync [--dry-run] [--to codex,agy] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
         return Ok(0);
     }
     let home = paths::home()?;
     match cli {
         Cli::Sync(options) => sync::run(&home, &options),
         Cli::HookAdapt(_) => unreachable!(),
+        Cli::Setup(options) => setup::run(&home, options),
         Cli::Run(run) => start(&home, run),
         Cli::Route(options) => {
             let brief = Brief::parse_for_route(fs::read_to_string(&options.brief)?)?;
@@ -857,10 +859,7 @@ fn manage(home: &Path, task: &str, accept: Option<bool>) -> Res<i32> {
 /// ancestor such as `~`) and fixed, so `baton setup` can grant agy read/write on exactly this path.
 /// `/tmp` resolves to `/private/tmp` on macOS.
 pub fn agy_wt_root() -> PathBuf {
-    let root = std::env::var_os("BATON_AGY_WT_DIR")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp/baton-wt"));
+    let root = setup::agy_root().unwrap_or_else(|_| PathBuf::from("/tmp/baton-wt"));
     let _ = std::fs::create_dir_all(&root);
     std::fs::canonicalize(&root).unwrap_or(root)
 }

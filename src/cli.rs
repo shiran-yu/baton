@@ -18,6 +18,7 @@ pub enum Cli {
     Usage { json: bool, refresh: bool },
     Statusline(String),
     Doctor { quick: bool, out: Option<PathBuf> },
+    Setup(crate::setup::Options),
     Help,
 }
 
@@ -143,6 +144,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             }))
         }
         "--help" | "-h" | "help" => Ok(Cli::Help),
+        "setup" => crate::setup::parse(args).map(Cli::Setup),
         "usage" => {
             let (mut json, mut refresh) = (false, false);
             for flag in args {
