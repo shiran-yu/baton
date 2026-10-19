@@ -176,6 +176,91 @@ fn plan_present_machine_only_offers_repeatable_sync_and_selftest() {
 }
 
 #[test]
+fn git_credentials_pending_after_binary_when_logged_in_without_helper() {
+    let m = Machine::new();
+    m.script("gh", "[ \"$*\" = 'auth status' ] || exit 9");
+    m.script(
+        "git",
+        "[ \"$*\" = 'config --global --get-all credential.https://github.com.helper' ] || exit 9\nexit 1",
+    );
+    let plan = m.plan();
+    assert_eq!(&ids(&plan)[..2], ["binary", "git-credentials"]);
+    assert_eq!(plan[1]["commands"], json!(["gh auth setup-git"]));
+    assert_eq!(plan[1]["needs_consent"], true);
+    assert_eq!(plan[1]["needs_user"], false);
+    assert_eq!(
+        m.calls(),
+        "gh:auth status\ngit:config --global --get-all credential.https://github.com.helper\n"
+    );
+    assert!(!m.home.join(".gitconfig").exists());
+    m.script("git", "printf '%s\\n' '' 'osxkeychain'");
+    assert!(ids(&m.plan()).contains(&"git-credentials"));
+}
+
+#[test]
+fn git_credentials_omitted_when_helper_is_configured() {
+    let m = Machine::new();
+    m.script("gh", "[ \"$*\" = 'auth status' ] || exit 9");
+    m.script(
+        "git",
+        "printf '%s\\n' '' 'osxkeychain' '!/opt/bin/gh auth git-credential'",
+    );
+    assert!(!ids(&m.plan()).contains(&"git-credentials"));
+    assert!(!m.calls().contains("setup-git"));
+}
+
+#[test]
+fn git_credentials_omitted_when_gh_is_missing_or_logged_out() {
+    let m = Machine::new();
+    m.script("git", "exit 9");
+    assert!(!ids(&m.plan()).contains(&"git-credentials"));
+    assert!(m.calls().is_empty());
+    m.script("gh", "echo 'not logged in' >&2\nexit 1");
+    assert!(!ids(&m.plan()).contains(&"git-credentials"));
+    assert_eq!(m.calls(), "gh:auth status\n");
+}
+
+#[test]
+fn git_credentials_apply_requires_consent_and_yes_runs_setup_git() {
+    let m = Machine::new();
+    m.script("gh", "[ \"$*\" = 'auth setup-git' ] || exit 9");
+    let output = m.run(&["setup", "--apply", "git-credentials"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--yes"));
+    assert!(m.calls().is_empty());
+    m.ok(&["setup", "--apply", "git-credentials", "--yes"]);
+    assert_eq!(m.calls(), "gh:auth setup-git\n");
+}
+
+#[test]
+fn git_credentials_respects_executable_overrides() {
+    let m = Machine::new();
+    m.script("custom-gh", "exit 0");
+    m.script("custom-git", "exit 1");
+    let output = m
+        .command()
+        .env("BATON_GH", m.home.join("bin/custom-gh"))
+        .env("BATON_GIT", m.home.join("bin/custom-git"))
+        .args(["setup", "--plan", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let plan: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(ids(&plan).contains(&"git-credentials"));
+    assert!(m
+        .calls()
+        .contains("custom-gh:auth status\ncustom-git:config"));
+    let output = m
+        .command()
+        .env("BATON_GH", m.home.join("bin/custom-gh"))
+        .args(["setup", "--apply", "git-credentials", "--yes"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(m.calls().ends_with("custom-gh:auth setup-git\n"));
+}
+
+#[test]
 fn permissions_preserve_keys_order_bytes_backup_and_are_idempotent() {
     let m = Machine::new();
     let original = " \n{\n  \"z-last\": 1e2,\n  \"permissions\": {\"z\":true, \"allow\":[\"read_file(/existing/)\"], \"a\":{\"escape\\\"\": [1,2]}},\n  \"a-first\": false\n}\n";
