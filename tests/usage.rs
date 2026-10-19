@@ -494,3 +494,25 @@ fn full_doctor_auth_presence_hooks_versions_and_usage() {
     assert!(!text.contains("secret-command"));
     assert!(!text.contains("do-not-read-auth"));
 }
+
+#[test]
+fn exhausted_source_survives_cache_expiry_until_explicit_refresh() {
+    let f = Fixture::new();
+    let mut snapshot = f.usage(true);
+    snapshot["fetched_at"] = json!(0);
+    let codex = snapshot["agents"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|s| s["agent"] == "codex")
+        .unwrap();
+    codex["exhausted"] = json!(true);
+    codex["error"] = json!("usage limit reached");
+    fs::write(f.dir.join("state/usage.json"), snapshot.to_string()).unwrap();
+    let cached = f.usage(false);
+    assert_eq!(source(&cached, "codex")["error"], "usage limit reached");
+    assert_eq!(source(&cached, "codex")["exhausted"], true);
+    let refreshed = f.usage(true);
+    assert!(source(&refreshed, "codex")["error"].is_null());
+    assert!(source(&refreshed, "codex")["exhausted"].is_null());
+}

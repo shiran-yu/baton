@@ -38,11 +38,25 @@ pub fn classify(
     if difficulty.is_some_and(|d| !(1..=4).contains(&d)) {
         return Err(Error::usage("--difficulty must be 1 through 4"));
     }
-    let lower = brief.goal.to_lowercase();
-    let words: Vec<_> = lower
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect();
+    let headline = brief
+        .title
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| {
+            let end = brief
+                .goal
+                .char_indices()
+                .find_map(|(i, c)| {
+                    (matches!(c, '.' | '!' | '?')
+                        && brief.goal[i + c.len_utf8()..]
+                            .chars()
+                            .next()
+                            .is_none_or(char::is_whitespace))
+                    .then_some(i + c.len_utf8())
+                })
+                .unwrap_or(brief.goal.len());
+            &brief.goal[..end]
+        });
     let rules: &[(&str, &[&str])] = &[
         ("bugfix", &["fix", "bug", "crash"]),
         (
@@ -51,26 +65,48 @@ pub fn classify(
         ),
         (
             "docs",
-            &["doc", "docs", "documentation", "readme", "comment"],
+            &[
+                "doc",
+                "docs",
+                "document",
+                "documentation",
+                "readme",
+                "comment",
+            ],
         ),
         ("test", &["test", "tests", "coverage"]),
         ("refactor", &["refactor", "extract", "split"]),
         ("review", &["review", "audit"]),
         ("research", &["investigate", "explain", "find"]),
     ];
-    let only_docs = !brief.files.is_empty()
-        && brief.files.iter().all(|p| {
-            let p = p.trim_start_matches("./").to_lowercase();
-            p.ends_with(".md") || p.starts_with("docs/") || p.contains("/docs/")
-        });
-    let inferred = if only_docs {
-        "docs"
-    } else {
-        rules
+    let words = |text: &str| -> Vec<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    let primary = words(headline);
+    let context = words(&brief.text);
+    let candidates: Vec<_> = rules
+        .iter()
+        .filter(|(_, keys)| primary.iter().any(|w| keys.contains(&w.as_str())))
+        .collect();
+    let inferred = if candidates.len() > 1 {
+        candidates
             .iter()
-            .find(|(_, keys)| words.iter().any(|w| keys.contains(w)))
+            .max_by_key(|(_, keys)| {
+                context
+                    .iter()
+                    .filter(|w| keys.contains(&w.as_str()))
+                    .count()
+            })
             .map(|r| r.0)
             .unwrap_or("implement")
+    } else if let Some(rule) = candidates.first() {
+        rule.0
+    } else {
+        "implement"
     };
     let task_type = task_type.unwrap_or(inferred).to_string();
     let mut d = 2_i32;
@@ -356,7 +392,7 @@ mod tests {
         }
         let b = brief("Add a widget", "- `README.md`\n- docs/**", "true");
         let c = classify(&b, None, None).unwrap();
-        assert_eq!((c.task_type.as_str(), c.difficulty), ("docs", 2));
+        assert_eq!((c.task_type.as_str(), c.difficulty), ("implement", 3));
         let c = classify(&b, Some("bugfix"), Some(1)).unwrap();
         assert_eq!((c.task_type.as_str(), c.difficulty), ("bugfix", 1));
         assert!(classify(&b, Some("invalid"), None).is_err());
@@ -364,6 +400,54 @@ mod tests {
         let mixed = brief("Add a widget", "README.md\nsrc/main.rs", "true");
         assert_eq!(classify(&mixed, None, None).unwrap().task_type, "implement");
     }
+    #[test]
+    fn repository_briefs_and_headline_priority() {
+        for (text, expected) in [
+            (
+                include_str!("../tests/fixtures/briefs/brief-c5-sync-adapt.md"),
+                "implement",
+            ),
+            (
+                include_str!("../tests/fixtures/briefs/brief-c6-setup.md"),
+                "implement",
+            ),
+            (
+                include_str!("../tests/fixtures/briefs/mechanical.md"),
+                "mechanical",
+            ),
+            (include_str!("../tests/fixtures/briefs/docs.md"), "docs"),
+        ] {
+            let b = Brief::parse_for_route(text.into()).unwrap();
+            assert_eq!(classify(&b, None, None).unwrap().task_type, expected);
+        }
+        for (goal, expected) in [
+            (
+                "Add a widget. Fix bugs, rename modules, and update docs and tests.",
+                "implement",
+            ),
+            ("Rename a widget! Fix bugs and add tests.", "mechanical"),
+            (
+                "Add a src/widget.rs module. Fix bugs in tests.",
+                "implement",
+            ),
+        ] {
+            assert_eq!(
+                classify(&brief(goal, "src/**", "true"), None, None)
+                    .unwrap()
+                    .task_type,
+                expected
+            );
+        }
+        let b = Brief::parse_for_route("## Title\nRename the widget\n## Goal\nFix crashes and add tests.\n## Files\nsrc/**\n## Forbidden\nNone\n## Acceptance\n```sh\ntrue\n```".into()).unwrap();
+        assert_eq!(classify(&b, None, None).unwrap().task_type, "mechanical");
+        let b = brief(
+            "Review and refactor the module. Refactor the parser and extract helpers.",
+            "src/**",
+            "true",
+        );
+        assert_eq!(classify(&b, None, None).unwrap().task_type, "refactor");
+    }
+
     #[test]
     fn difficulty_uses_entire_goal_and_file_boundaries() {
         let six = (0..6)

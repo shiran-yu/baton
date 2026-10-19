@@ -26,6 +26,8 @@ pub struct Source {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exhausted: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_type: Option<String>,
@@ -373,6 +375,45 @@ pub fn user_home() -> PathBuf {
 pub fn cache(home: &Path) -> Option<Snapshot> {
     paths::read_json(&home.join("usage.json")).ok()
 }
+pub fn mark_exhausted(home: &Path, agent: &str, message: &str) -> Res<()> {
+    let path = home.join("usage.json");
+    let mut cache: Value = paths::read_json(&path)
+        .unwrap_or_else(|_| json!({"fetched_at": paths::now(), "agents": []}));
+    let key = if cache.get("sources").is_some() {
+        Some("sources")
+    } else if cache.get("agents").is_some() {
+        Some("agents")
+    } else {
+        None
+    };
+    let root = match key {
+        Some(key) => &mut cache[key],
+        None => &mut cache,
+    };
+    let source = if let Some(sources) = root.as_array_mut() {
+        let index = sources
+            .iter()
+            .position(|s| s["agent"] == agent || s["source"] == agent)
+            .unwrap_or_else(|| {
+                sources.push(json!({"agent":agent}));
+                sources.len() - 1
+            });
+        &mut sources[index]
+    } else {
+        if !root.is_object() {
+            *root = json!({});
+        }
+        if !root[agent].is_object() {
+            root[agent] = json!({"agent":agent});
+        }
+        &mut root[agent]
+    };
+    source["error"] = json!(message);
+    source["exhausted"] = json!(true);
+    fs::create_dir_all(home)?;
+    paths::write_json(&path, &cache)
+}
+
 pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
     if !refresh {
         if let Some(snapshot) = cache(home) {
@@ -402,7 +443,7 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
         .into_iter()
         .map(|(agent, f)| (agent, std::thread::spawn(f)))
         .collect();
-    let agents = handles
+    let mut agents: Vec<Source> = handles
         .into_iter()
         .map(|(agent, h)| {
             h.join()
@@ -414,6 +455,22 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
                 })
         })
         .collect();
+    if !refresh {
+        // Routing also accepts keyed/raw caches. Keep terminal failures sticky in all
+        // supported cache layouts, even when the five-minute usage cache expires.
+        let previous = crate::quota::Usage::cached(home);
+        for current in &mut agents {
+            let source = previous.source(&current.agent);
+            if source["exhausted"] == true {
+                *current = serde_json::from_value(source.clone()).unwrap_or_else(|_| Source {
+                    agent: current.agent.clone(),
+                    error: source["error"].as_str().map(String::from),
+                    exhausted: true,
+                    ..Source::default()
+                });
+            }
+        }
+    }
     let snapshot = Snapshot {
         fetched_at: paths::now(),
         agents,

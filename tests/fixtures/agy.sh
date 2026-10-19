@@ -22,6 +22,13 @@ while IFS= read -r line; do
     else
         printf '%s\n' fixed >> src/output.txt
     fi
+    case "$mode" in
+        *FAKE_QUOTA_LINE*) printf '%s\n' 'AGY_ERROR: RESOURCE_EXHAUSTED: exhausted'; exit 1 ;;
+        *FAKE_QUOTA_EVENT*) printf '%s\n' '{"event":"error","error":{"message":"Individual quota reached\nTry later."}}'; exit 0 ;;
+        *FAKE_CREDITS*) printf '%s\n' '{"event":"result","result":{"status":"ERROR","error":{"message":"credits balance is too low"}}}'; exit 1 ;;
+        *FAKE_NOT_LOGGED_IN*) printf '%s\n' 'not logged in' >&2; exit 1 ;;
+        *FAKE_AUTH*) printf '%s\n' '{"event":"AGY_ERROR","message":"authentication required"}'; exit 1 ;;
+    esac
     step=$((turn * 2))
     printf '%s\n' "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"fake-agy\",\"step_index\":$step,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"write_to_file\"}}"
     printf '%s\n' "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"fake-agy\",\"step_index\":$step,\"state\":\"DONE\",\"step_type\":\"tool\",\"tool_info\":{\"name\":\"write_to_file\"}}}"

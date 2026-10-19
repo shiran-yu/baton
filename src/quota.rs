@@ -25,8 +25,12 @@ impl Usage {
         )
     }
 
-    fn source(&self, agent: &str) -> &Value {
-        let root = self.0.get("sources").or_else(|| self.0.get("agents")).unwrap_or(&self.0);
+    pub(crate) fn source(&self, agent: &str) -> &Value {
+        let root = self
+            .0
+            .get("sources")
+            .or_else(|| self.0.get("agents"))
+            .unwrap_or(&self.0);
         if let Some(sources) = root.as_array() {
             sources
                 .iter()
@@ -129,7 +133,8 @@ fn has_error(v: &Value) -> bool {
     (!error.is_null() && error != false && error != "")
         || v["status"] == "error"
         || v.get("rateLimitReachedType").is_some_and(|v| !v.is_null())
-        || v.get("rate_limit_reached_type").is_some_and(|v| !v.is_null())
+        || v.get("rate_limit_reached_type")
+            .is_some_and(|v| !v.is_null())
 }
 
 fn name(w: &Value) -> String {
