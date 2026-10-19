@@ -28,8 +28,12 @@ impl Default for Options {
 struct Config {
     #[serde(default = "own_marketplaces")]
     own_marketplaces: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "default_exclude")]
     exclude: Vec<String>,
+}
+/// OpenAI's codex plugin drives Codex from Claude Code; mirroring it into Codex or agy is pointless.
+fn default_exclude() -> Vec<String> {
+    vec!["codex".into()]
 }
 fn own_marketplaces() -> Vec<String> {
     [
@@ -80,7 +84,7 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
     } else {
         Config {
             own_marketplaces: own_marketplaces(),
-            exclude: Vec::new(),
+            exclude: default_exclude(),
         }
     };
     let mut codex = Codex::default();
