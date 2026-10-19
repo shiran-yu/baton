@@ -1059,3 +1059,146 @@ fn commit_subjects_use_title_or_first_sentence_on_run_and_accept() {
         assert_eq!(f.git(&["log", "-1", "--format=%s"]), expected);
     }
 }
+
+#[test]
+fn quota_and_auth_failures_are_terminal_and_disable_routing() {
+    for (agent, marker, message) in [
+        (
+            "codex",
+            "FAKE_QUOTA",
+            "You have reached your usage limit. Try later.",
+        ),
+        ("codex", "FAKE_RATE_LIMIT", "rate limit reached"),
+        ("codex", "FAKE_AUTH", "authentication required"),
+        (
+            "agy",
+            "FAKE_QUOTA_LINE",
+            "AGY_ERROR: RESOURCE_EXHAUSTED: exhausted",
+        ),
+        (
+            "agy",
+            "FAKE_QUOTA_EVENT",
+            "Individual quota reached Try later.",
+        ),
+        ("agy", "FAKE_CREDITS", "credits balance is too low"),
+        ("agy", "FAKE_NOT_LOGGED_IN", "not logged in"),
+        ("agy", "FAKE_AUTH", "authentication required"),
+    ] {
+        let f = Fixture::new();
+        fs::create_dir_all(&f.home).unwrap();
+        fs::write(
+            f.home.join("usage.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "fetched_at": 0,
+                "agents": [
+                    {"agent":"codex","windows":[{"window":"5h","used":0.1,"pace":1.0}]},
+                    {"agent":"agy","windows":[{"window":"gemini-weekly","used":0.1,"pace":1.0}]}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let brief = f.brief("exhausted", marker, "false");
+        let out = f
+            .command()
+            .args(["run", agent, "--task", "exhausted", "--brief"])
+            .arg(&brief)
+            .args(["--json", "--auto-fix", "3"])
+            .output()
+            .unwrap();
+        code(&out, 4);
+        let result = json(&out);
+        assert_eq!(result["status"], "failed", "{agent} {marker}");
+        assert_eq!(result["notes"], message, "{agent} {marker}");
+        assert_eq!(result["rounds"], 0);
+        assert_eq!(result["acceptance"], serde_json::json!([]));
+        assert_eq!(f.read("exhausted", "status.json")["phase"], "failed");
+        let cache: Value =
+            serde_json::from_slice(&fs::read(f.home.join("usage.json")).unwrap()).unwrap();
+        let source = cache["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["agent"] == agent)
+            .unwrap();
+        assert_eq!(source["error"], message);
+        assert_eq!(source["exhausted"], true);
+        let route = f
+            .command()
+            .args(["route", "--brief"])
+            .arg(&brief)
+            .args(["--difficulty", "2", "--json"])
+            .output()
+            .unwrap();
+        code(&route, 0);
+        let route = json(&route);
+        assert_ne!(route["choice"]["agent"], agent);
+        assert!(route["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["agent"] == agent)
+            .all(|c| c["skipped"].is_string()));
+    }
+}
+
+#[test]
+fn codex_rollout_updates_status_before_completion_and_final_usage_wins() {
+    let f = Fixture::new();
+    let brief = f.brief("live", "FAKE_LIVE", "test -f src/output.txt");
+    let mut child = f
+        .command()
+        .args(["run", "codex", "--task", "live", "--brief"])
+        .arg(brief)
+        .args(["--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        let status = fs::read(f.task("live").join("status.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        if let Some(status) = status {
+            if status["tokens"]["input"] == 12000 {
+                assert_eq!(status["tokens"]["cached"], 8000);
+                assert_eq!(status["tokens"]["output"], 150);
+                assert_eq!(status["quota"], "5h 34% · wk 7%");
+                assert_eq!(status["phase"], "working");
+                assert!(child.try_wait().unwrap().is_none());
+                break;
+            }
+        }
+        if start.elapsed().as_secs() > 10 {
+            let _ = child.kill();
+            panic!("live rollout usage never appeared");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // A partial append must survive a poll; unrelated events must not affect usage.
+    use std::io::Write;
+    let rollout = fs::read_to_string(f.task("live").join("rollout-path")).unwrap();
+    let mut rollout = fs::OpenOptions::new().append(true).open(rollout).unwrap();
+    writeln!(rollout, r#"{{"type":"other","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":1}}}}}}}}"#).unwrap();
+    write!(rollout, r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":24000,"cached_input_tokens":16000,"output_tokens":300}}}}"#).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    assert_eq!(f.read("live", "status.json")["tokens"]["input"], 12000);
+    rollout.write_all(b"}}\n").unwrap();
+    let start = std::time::Instant::now();
+    while f.read("live", "status.json")["tokens"]["input"] != 24000 {
+        assert!(
+            start.elapsed().as_secs() < 5,
+            "appended usage never appeared"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    fs::write(f.task("live").join("release-worker"), "").unwrap();
+    let out = child.wait_with_output().unwrap();
+    code(&out, 0);
+    assert_eq!(
+        json(&out)["tokens"],
+        serde_json::json!({"input":190369,"cached":156288,"output":5927})
+    );
+    assert_eq!(f.read("live", "status.json")["quota"], "5h 34% · wk 7%");
+}

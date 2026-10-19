@@ -26,6 +26,22 @@ case "$input" in
     *FAKE_AUTH*) printf '%s\n' 'authentication required' >&2; exit 1 ;;
 esac
 printf '%s\n' '{"type":"thread.started","thread_id":"fake-thread-123"}' '{"type":"turn.started"}'
+case "$input" in
+    *FAKE_QUOTA*) printf '%s\n' '{"type":"turn.failed","error":{"message":"You have reached your usage limit.\nTry later."}}'; exit 1 ;;
+    *FAKE_RATE_LIMIT*) printf '%s\n' '{"type":"error","message":"rate limit reached"}'; exit 0 ;;
+    *FAKE_LIVE*)
+        day=$(date -u -d yesterday +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d)
+        mkdir -p "$CODEX_HOME/sessions/$day"
+        rollout="$CODEX_HOME/sessions/$day/rollout-test-fake-thread-123.jsonl"
+        printf '%s' "$rollout" > "$taskdir/rollout-path"
+        printf '%s\n' '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":12000,"cached_input_tokens":8000,"output_tokens":150}},"rate_limits":{"primary":{"used_percent":34,"window_minutes":300,"resets_at":9999999999},"secondary":{"used_percent":7,"window_minutes":10080,"resets_at":9999999999}}}}' > "$rollout"
+        tries=0
+        while [ ! -f "$taskdir/release-worker" ] && [ "$tries" -lt 150 ]; do
+            sleep 0.1
+            tries=$((tries + 1))
+        done
+        ;;
+esac
 printf '%s\n' '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"cargo test\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}'
 original=$(cat "$taskdir/input-no.txt")
 case "$read_only:$original" in

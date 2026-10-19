@@ -159,6 +159,9 @@ impl Agy {
         let line = match event {
             Event::Err(line) => {
                 progress.log(&line)?;
+                if codex::quota_error("agy", &line) {
+                    return Ok(Some(exhausted(&line)));
+                }
                 if line.contains("jetski: no output produced") {
                     self.denied = Some(line);
                 }
@@ -175,8 +178,20 @@ impl Agy {
             "{line}"
         )?;
         let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            if codex::quota_error("agy", &line) {
+                return Ok(Some(exhausted(&line)));
+            }
             return Ok(None);
         };
+        let kind = event["event"]
+            .as_str()
+            .or(event["type"].as_str())
+            .unwrap_or("");
+        if ["error", "AGY_ERROR", "result"].contains(&kind) || event.get("error").is_some() {
+            if let Some(message) = quota_message(&event) {
+                return Ok(Some(exhausted(message)));
+            }
+        }
         match event["event"].as_str().unwrap_or("") {
             "init" => {
                 if let (Some(meta), Some(id)) = (meta, event["conversation_id"].as_str()) {
@@ -261,6 +276,7 @@ impl Agy {
                     Outcome {
                         success,
                         timed_out,
+                        exhausted: false,
                         error,
                     },
                     report,
@@ -346,6 +362,7 @@ impl Worker for Agy {
                 return Ok((
                     Outcome {
                         timed_out: true,
+                        exhausted: false,
                         success: false,
                         error: "worker timed out".into(),
                     },
@@ -355,6 +372,11 @@ impl Worker for Agy {
             match self.events.recv_timeout(Duration::from_millis(50)) {
                 Ok(event) => {
                     if let Some(turn) = self.event(event, Some(meta), progress)? {
+                        if turn.0.exhausted {
+                            self.input.take();
+                            self.child.take();
+                            return Ok(turn);
+                        }
                         if turn.0.timed_out {
                             self.terminate(progress)?;
                             return Ok(turn);
@@ -381,7 +403,12 @@ impl Worker for Agy {
         while self.child.is_some() {
             match self.events.recv_timeout(Duration::from_millis(50)) {
                 Ok(event) => {
-                    self.event(event, None, progress)?;
+                    if let Some((outcome, _)) = self.event(event, None, progress)? {
+                        if outcome.exhausted {
+                            self.child.take();
+                            return Err(Error::new(4, outcome.error));
+                        }
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     disconnected = true;
@@ -414,4 +441,34 @@ fn tokens(usage: &Value) -> Tokens {
         output: usage["output_tokens"].as_u64().unwrap_or(0)
             + usage["thinking_tokens"].as_u64().unwrap_or(0),
     }
+}
+
+fn quota_message(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(message) if codex::quota_error("agy", message) => Some(message),
+        Value::Object(fields) => {
+            let matched = fields.values().find_map(quota_message)?;
+            Some(
+                fields
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or(matched),
+            )
+        }
+        Value::Array(values) => values.iter().find_map(quota_message),
+        _ => None,
+    }
+}
+
+fn exhausted(message: &str) -> (Outcome, Report) {
+    let message = codex::one_line(message);
+    (
+        Outcome {
+            timed_out: false,
+            exhausted: true,
+            success: false,
+            error: message.clone(),
+        },
+        worker::failed(message),
+    )
 }

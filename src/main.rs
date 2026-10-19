@@ -535,6 +535,7 @@ fn execute(
                 (
                     codex::Outcome {
                         timed_out: e.code == 5,
+                        exhausted: e.code == 4,
                         success: false,
                         error: e.to_string(),
                     },
@@ -546,10 +547,20 @@ fn execute(
             if !outcome.error.is_empty()
                 && !(meta.agent == "agy" && worker.notes == "no structured_output")
             {
-                worker.notes = result::first(&outcome.error, 300);
+                worker.notes = if outcome.exhausted {
+                    codex::one_line(&outcome.error)
+                } else {
+                    result::first(&outcome.error, 300)
+                };
             }
         }
-        let verification = match verify::run(dir, meta, brief, &mut progress, outcome.timed_out) {
+        let verification = match verify::run(
+            dir,
+            meta,
+            brief,
+            &mut progress,
+            outcome.timed_out || outcome.exhausted,
+        ) {
             Ok(verification) => verification,
             Err(e) => {
                 worker = worker::failed(format!("verification failed: {e}"));
@@ -585,8 +596,9 @@ fn execute(
         Ok(None) => {}
         Err(e) => {
             outcome.success = false;
+            outcome.exhausted |= e.code == 4;
             outcome.timed_out |= e.code == 5;
-            if outcome.error.is_empty() {
+            if outcome.error.is_empty() || e.code == 4 {
                 outcome.error = e.to_string();
             }
             if worker.notes != "no structured_output" || outcome.timed_out {
@@ -600,6 +612,10 @@ fn execute(
             worker.notes = format!("cannot commit task changes: {e}");
             verification.verified = false;
         }
+    }
+    if outcome.exhausted {
+        worker = worker::failed(codex::one_line(&outcome.error));
+        usage::mark_exhausted(home, &meta.agent, &worker.notes)?;
     }
     let result = result::Result {
         task: meta.task.clone(),
@@ -620,22 +636,10 @@ fn execute(
         worktree: meta.worktree.clone(),
         branch: meta.branch.clone(),
     };
-    let error_lower = outcome.error.to_lowercase();
-    let code = if outcome.timed_out {
-        5
-    } else if !outcome.success
-        && [
-            "auth",
-            "unauthorized",
-            "quota",
-            "rate limit",
-            "usage limit",
-            "not logged in",
-        ]
-        .iter()
-        .any(|s| error_lower.contains(s))
-    {
+    let code = if outcome.exhausted {
         4
+    } else if outcome.timed_out {
+        5
     } else if result.status == "needs_decision" {
         6
     } else if result.status == "done" && !result.verified {
