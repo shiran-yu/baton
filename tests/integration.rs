@@ -69,6 +69,7 @@ impl Fixture {
             .env("CODEX_HOME", self.dir.join("codex-home"))
             .env("TMPDIR", &self.dir)
             .env("BATON_AGY_WT_DIR", self.dir.join("agy-wt"))
+            .env("BATON_NO_USAGE_REFRESH", "1")
             .env("USER", "baton-test-user")
             .env("SHELL", "/bin/sh")
             .env("LC_ALL", "C")

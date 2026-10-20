@@ -291,6 +291,7 @@ fn dispatch(cli: Cli) -> Res<i32> {
 fn routing(home: &Path, brief: &Brief, class: &route::Classification) -> Res<route::Routing> {
     // Hard rules do not depend on availability or the ledger being readable.
     let history = if route::hard_rule(class, brief).is_none() {
+        fresh_usage(home);
         ledger::read(home)?
     } else {
         Vec::new()
@@ -302,6 +303,25 @@ fn routing(home: &Path, brief: &Brief, class: &route::Classification) -> Res<rou
         &quota::Usage::cached(home),
         paths::now(),
     ))
+}
+
+/// Routing weighs remaining quota, so a `baton usage` cache older than 30 minutes, or one taken
+/// before a window reset, is refreshed first (free calls, a few seconds). Caches in other layouts
+/// are left alone, and `BATON_NO_USAGE_REFRESH` turns this off (tests).
+fn fresh_usage(home: &Path) {
+    if std::env::var_os("BATON_NO_USAGE_REFRESH").is_some() {
+        return;
+    }
+    let Some(snapshot) = usage::cache(home) else { return };
+    let now = paths::now();
+    let reset = snapshot
+        .agents
+        .iter()
+        .flat_map(|a| a.windows.iter())
+        .any(|w| w.resets_at > 0 && w.resets_at <= now);
+    if reset || now.saturating_sub(snapshot.fetched_at) > 1800 {
+        let _ = usage::read(home, false);
+    }
 }
 
 fn classify_meta(meta: &mut Meta, brief: &Brief) -> Res<()> {
