@@ -1,6 +1,6 @@
 ---
 name: baton
-description: Hand bounded coding work from Claude Code to Codex or Antigravity (agy) and check it, to save the lead's usage. Use when a task is well specified and checkable by commands (implement with tests, refactor, bugfix with a repro, docs, mechanical edits, a second-opinion review), when the user asks to use Codex, agy or Antigravity, or asks how much quota each agent has left.
+description: Hand bounded coding work and read-only research from Claude Code to Codex or Antigravity (agy) and check it, to save the lead's usage. Use when a task is well specified and checkable by commands (implement with tests, refactor, bugfix with a repro, docs, mechanical edits, a second-opinion review), when the answer is in files on disk and only needs reading (sweep experiment logs or plans for numbers, survey a code base or a paper library, check a claim against a file), before spawning a Claude subagent for such reading, when the user asks to use Codex, agy or Antigravity, or asks how much quota each agent has left.
 ---
 
 # baton: lead the workers
@@ -15,6 +15,7 @@ Delegate when all hold: the outcome is checkable by commands (tests, build, lint
 files to touch are known, and no design decision is left open. Keep for yourself: anything that
 touches trading, money, `keyfob` or secrets (baton refuses those briefs anyway), architecture and
 API decisions, ambiguous requests, and edits too small to brief (a brief costs ~300–600 tokens).
+Reading is delegable too, judging is not: see "Read-only research" below.
 
 ## 1. Check capacity and pick the worker
 
@@ -79,6 +80,36 @@ scope, acceptance rerun), `files_changed`, `diffstat`, `out_of_scope`, `acceptan
   `## Files` and fix, or drop.
 
 Tell the user in one line what you delegated, to whom, and the outcome with its token count.
+
+## Read-only research
+
+When the answer sits in files and only needs reading, send it to Codex instead of a Claude subagent:
+sweeping experiment plans and logs for numbers, surveying what a code base or a paper library says
+on a question, checking a claim against its source, extracting a table. Run with `--mode read`:
+Codex gets a read-only sandbox with web search off, so local files only. Read mode makes no
+worktree and needs no git repository, so `--no-worktree` is implied; run it from the project
+folder. Several read briefs can run at once, one per slice of the material.
+
+The four headings stay (baton checks them); fill them for reading:
+
+~~~markdown
+## Goal
+The question, and the answer's shape: "each finding as one line: claim, number, file:line".
+## Files
+The reading list as paths or globs. Nothing is written, so this bounds the reading, not edits.
+## Forbidden
+Writing any file; a number not quoted from a file; conclusions beyond what the files state.
+## Acceptance
+```
+true
+```
+## Context
+What is already known or ruled out, so the worker does not re-derive it.
+~~~
+
+The answer comes back in the result's `notes`. Keep the synthesis for yourself: what the findings
+mean, which matter, ranking, and anything the user will act on. Before relying on a number,
+re-read it at its cited `file:line`.
 
 ## Quota discipline
 

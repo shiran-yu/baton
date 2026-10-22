@@ -140,6 +140,10 @@ pub fn run(
     } else {
         command.args(["-s", sandbox, "-C", &meta.worktree]);
     }
+    // A read task outside git has no base commit; codex refuses such a folder without this flag.
+    if meta.base_commit.is_empty() {
+        command.arg("--skip-git-repo-check");
+    }
     command.arg("--output-schema").arg(dir.join("schema.json"));
     if !resume {
         command.arg("-o").arg(&last);
