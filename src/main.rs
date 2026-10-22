@@ -238,6 +238,11 @@ fn dispatch(cli: Cli) -> Res<i32> {
             match view.as_str() {
                 "--diff" => {
                     let meta: Meta = paths::read_json(&dir.join("meta.json"))?;
+                    if meta.base_commit.is_empty() {
+                        return Err(Error::usage(
+                            "cannot show diff: task was run outside a git repository",
+                        ));
+                    }
                     let (cwd, target) = if !meta.closed {
                         (meta.worktree.as_str(), "")
                     } else {
@@ -353,24 +358,33 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
         run.effort = choice.effort.unwrap_or_default();
     }
     brief::lint(&brief.text)?;
-    let root = git::root()?;
-    let base_commit = git::run(
-        &root,
-        &["rev-parse", "--verify", &format!("{}^{{commit}}", run.base)],
-    )
-    .map_err(|e| Error::usage(format!("invalid base ref '{}': {e}", run.base)))?
-    .trim()
-    .to_string();
-    let mut base_branch = git::run(&root, &["rev-parse", "--symbolic-full-name", &run.base])?
+    let (root, has_git) = match git::root() {
+        Ok(root) => (root, true),
+        Err(_) if run.mode == "read" => (std::env::current_dir()?, false),
+        Err(e) => return Err(e),
+    };
+    let (base_commit, base_branch) = if has_git {
+        let base_commit = git::run(
+            &root,
+            &["rev-parse", "--verify", &format!("{}^{{commit}}", run.base)],
+        )
+        .map_err(|e| Error::usage(format!("invalid base ref '{}': {e}", run.base)))?
         .trim()
-        .strip_prefix("refs/heads/")
-        .map(String::from)
-        .unwrap_or_default();
-    if base_branch.is_empty() {
-        base_branch = git::run(&root, &["branch", "--show-current"])?
+        .to_string();
+        let mut base_branch = git::run(&root, &["rev-parse", "--symbolic-full-name", &run.base])?
             .trim()
-            .to_string();
-    }
+            .strip_prefix("refs/heads/")
+            .map(String::from)
+            .unwrap_or_default();
+        if base_branch.is_empty() {
+            base_branch = git::run(&root, &["branch", "--show-current"])?
+                .trim()
+                .to_string();
+        }
+        (base_commit, base_branch)
+    } else {
+        (String::new(), String::new())
+    };
     let task = run.task.unwrap_or_else(paths::id);
     cli::task_id(&task)?;
     let dir = home.join("tasks").join(&task);

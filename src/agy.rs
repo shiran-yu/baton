@@ -37,6 +37,11 @@ pub struct Agy {
 }
 
 fn agent(meta: &Meta) -> Res<()> {
+    if meta.base_commit.is_empty() {
+        return Err(Error::usage(
+            "agy requires a git repository for agent setup",
+        ));
+    }
     let cwd = Path::new(&meta.worktree);
     let relative = ".agents/agents/baton-worker.md";
     let common = git::run(cwd, &["rev-parse", "--git-common-dir"])?;

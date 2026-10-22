@@ -23,7 +23,13 @@ pub fn run(
 ) -> Res<Verification> {
     let cwd = Path::new(&meta.worktree);
     progress.status.phase = "verifying".into();
-    let worker_files = git::changed(cwd, &meta.base_commit)?;
+    // A read task outside git has no base commit or changes to inspect.
+    let has_git = !meta.base_commit.is_empty();
+    let worker_files = if has_git {
+        git::changed(cwd, &meta.base_commit)?
+    } else {
+        Vec::new()
+    };
     progress.status.files = worker_files.len();
     progress.update()?;
     let mut acceptance = Vec::new();
@@ -51,7 +57,11 @@ pub fn run(
         }
     }
     // Inspect after acceptance as well: commands may create or modify files.
-    let files = git::changed(cwd, &meta.base_commit)?;
+    let files = if has_git {
+        git::changed(cwd, &meta.base_commit)?
+    } else {
+        Vec::new()
+    };
     let out_of_scope: Vec<String> = files
         .iter()
         .chain(&worker_files)
@@ -64,7 +74,11 @@ pub fn run(
         && (meta.mode == "read" || (!worker_files.is_empty() && !files.is_empty()))
         && out_of_scope.is_empty()
         && acceptance.iter().all(|a| a.passed);
-    let diffstat = git::diffstat(cwd, &meta.base_commit, files.len())?;
+    let diffstat = if has_git {
+        git::diffstat(cwd, &meta.base_commit, files.len())?
+    } else {
+        String::new()
+    };
     progress.status.files = files.len();
     Ok(Verification {
         verified,

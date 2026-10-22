@@ -310,6 +310,100 @@ fn lint_validation_and_task_paths() {
 }
 
 #[test]
+fn read_mode_outside_git_uses_current_directory_and_acceptance() {
+    let f = Fixture::new();
+    let research = f.dir.join("research");
+    fs::create_dir(&research).unwrap();
+    for (task, command, verified, exit) in [
+        ("research-pass", "touch acceptance-ran", true, 0),
+        ("research-fail", "false", false, 3),
+    ] {
+        let out = f
+            .command()
+            .current_dir(&research)
+            .args(["run", "codex", "--task", task, "--brief"])
+            .arg(f.brief(task, "FAKE_NO_EDIT", command))
+            .args(["--mode", "read", "--json"])
+            .output()
+            .unwrap();
+        code(&out, exit);
+        let result = json(&out);
+        assert_eq!(result, f.read(task, "result.json"));
+        assert_eq!(result["status"], "done");
+        assert_eq!(result["verified"], verified);
+        assert_eq!(result["files_changed"], serde_json::json!([]));
+        assert_eq!(result["out_of_scope"], serde_json::json!([]));
+        assert_eq!(result["diffstat"], "");
+        assert_eq!(result["branch"], "");
+        assert_eq!(result["acceptance"][0]["passed"], verified);
+        let meta = f.read(task, "meta.json");
+        assert_eq!(meta["base_commit"], "");
+        assert_eq!(meta["base_branch"], "");
+        for key in ["repo_root", "worktree"] {
+            assert_eq!(
+                Path::new(meta[key].as_str().unwrap())
+                    .canonicalize()
+                    .unwrap(),
+                research.canonicalize().unwrap()
+            );
+        }
+        assert!(!f.home.join("wt").exists());
+        assert!(!research.join(".git").exists());
+    }
+    assert!(research.join("acceptance-ran").exists());
+    for (args, message) in [
+        (
+            vec!["show", "research-pass", "--diff"],
+            "task was run outside a git repository",
+        ),
+        (
+            vec!["accept", "research-pass"],
+            "task has no managed worktree or branch",
+        ),
+        (
+            vec!["drop", "research-pass"],
+            "task has no managed worktree or branch",
+        ),
+    ] {
+        let out = f.call(&args);
+        code(&out, 2);
+        assert!(String::from_utf8_lossy(&out.stderr).contains(message));
+    }
+}
+
+#[test]
+fn edit_and_agy_outside_git_give_clear_errors() {
+    let f = Fixture::new();
+    let brief = f.brief("outside", "FAKE_NO_EDIT", "true");
+    let edit = f
+        .command()
+        .current_dir(&f.dir)
+        .args(["run", "codex", "--brief"])
+        .arg(&brief)
+        .output()
+        .unwrap();
+    code(&edit, 2);
+    assert!(String::from_utf8_lossy(&edit.stderr)
+        .contains("current directory must be inside a git repository"));
+    assert!(!f.home.exists());
+    let agy = f
+        .command()
+        .current_dir(&f.dir)
+        .args(["run", "agy", "--task", "outside", "--brief"])
+        .arg(&brief)
+        .args(["--mode", "read", "--json"])
+        .output()
+        .unwrap();
+    code(&agy, 1);
+    assert_eq!(json(&agy)["status"], "failed");
+    assert!(json(&agy)["notes"]
+        .as_str()
+        .unwrap()
+        .contains("agy requires a git repository for agent setup"));
+    assert!(!f.dir.join(".agents").exists());
+}
+
+#[test]
 fn read_mode_custom_options_and_generated_id() {
     let f = Fixture::new();
     let brief = f.brief("read", "FAKE_NO_EDIT", "true");
