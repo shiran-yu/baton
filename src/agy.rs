@@ -441,6 +441,7 @@ impl Worker for Agy {
 
 fn tokens(usage: &Value) -> Tokens {
     Tokens {
+        premium_requests: None,
         input: usage["input_tokens"].as_u64().unwrap_or(0),
         cached: usage["cache_read_tokens"].as_u64().unwrap_or(0),
         output: usage["output_tokens"].as_u64().unwrap_or(0)

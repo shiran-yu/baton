@@ -58,6 +58,21 @@ impl Usage {
         if has_error(data) {
             return Err("usage source errored or rate limited".into());
         }
+        if agent == "copilot" {
+            let remaining = data["remaining"]
+                .as_f64()
+                .or_else(|| {
+                    data.pointer("/quota_snapshots/premium_interactions/remaining")
+                        .and_then(Value::as_f64)
+                })
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| "invalid cached copilot premium quota".to_string())?;
+            return Ok(Quota {
+                remaining,
+                window: "premium-monthly".into(),
+                pace: 1.0,
+            });
+        }
         let limits = data
             .pointer("/result/rateLimits")
             .or_else(|| data.get("rateLimits"))

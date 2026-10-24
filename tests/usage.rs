@@ -53,6 +53,17 @@ echo agy >> "$BATON_HOME/calls"
 /bin/cat "$HOME/agy.json"
 "#,
         );
+        f.script(
+            "gh",
+            r#"[ "$*" = 'api /copilot_internal/user' ] || exit 1
+/bin/cat "$HOME/copilot.json"
+"#,
+        );
+        fs::write(
+            f.dir.join("copilot.json"),
+            include_str!("fixtures/usage/copilot-user.json"),
+        )
+        .unwrap();
         fs::write(
             f.dir.join("codex.json"),
             serde_json::from_str::<Value>(include_str!("fixtures/usage/codex-ratelimits.json"))
@@ -156,7 +167,7 @@ fn now() -> u64 {
 fn fixtures_exchange_normalization_cache_and_refresh() {
     let f = Fixture::new();
     let first = f.usage(false);
-    assert_eq!(first["agents"].as_array().unwrap().len(), 3);
+    assert_eq!(first["agents"].as_array().unwrap().len(), 4);
     let cx = source(&first, "codex");
     assert_eq!(cx["plan_type"], "plus");
     assert_eq!(cx["ordinary_usage_allowed"], true);
@@ -169,6 +180,12 @@ fn fixtures_exchange_normalization_cache_and_refresh() {
     assert_eq!(ag["windows"][0]["window"], "gemini-weekly");
     assert_eq!(ag["windows"][0]["resets_at"], 1793019034_u64);
     assert_eq!(ag["windows"][1]["used"], 0.0);
+    let cp = source(&first, "copilot");
+    assert_eq!(cp["entitlement"], 200.0);
+    assert_eq!(cp["remaining"], 124.0);
+    assert_eq!(cp["percent_remaining"], 62.3);
+    assert_eq!(cp["quota_reset_date"], "2026-11-01");
+    assert_eq!(cp["windows"][0]["window"], "premium-monthly");
     let cc = source(&first, "claude");
     assert_eq!(cc["fetched_at"], 1792418477_u64);
     assert_eq!(cc["windows"][0]["used"], 0.36);
@@ -415,7 +432,7 @@ fn quick_doctor_is_silent_or_names_missing_without_spawning() {
 #[test]
 fn doctor_scan_nested_help_skips_help_and_stops_at_depth_three() {
     let f = Fixture::new();
-    for agent in ["codex", "agy", "claude"] {
+    for agent in ["codex", "agy", "claude", "copilot"] {
         f.script(agent, r#"case "$*" in
 --version) echo fake-version ;;
 --help) echo 'Commands:'; echo '  first  First command'; echo '    Wrapped description'; echo '  help   Show help'; echo '  Options:'; echo '  --flag x' ;;
@@ -439,7 +456,7 @@ esac
         String::from_utf8_lossy(&out.stderr)
     );
     let versions = fs::read_to_string(dir.join("versions.txt")).unwrap();
-    for agent in ["codex", "agy", "claude"] {
+    for agent in ["codex", "agy", "claude", "copilot"] {
         assert!(versions.contains(&format!("{agent}: fake-version")));
         for tail in ["", "_first", "_first_nested", "_first_nested_third"] {
             assert!(dir.join(agent).join(format!("{agent}{tail}.txt")).exists());
@@ -463,6 +480,7 @@ fn full_doctor_auth_presence_hooks_versions_and_usage() {
         );
         assert!(f.dir.join(fixture).exists());
     }
+    f.script("copilot", "echo fake-copilot");
     fs::create_dir_all(f.dir.join(".codex")).unwrap();
     fs::write(
         f.dir.join(".codex/auth.json"),
@@ -481,6 +499,7 @@ fn full_doctor_auth_presence_hooks_versions_and_usage() {
         concat!("baton: ", env!("CARGO_PKG_VERSION")),
         "fake-codex",
         "fake-agy",
+        "fake-copilot",
         "claude: not installed",
         "auth.json: present",
         "test-hook",
@@ -515,4 +534,40 @@ fn exhausted_source_survives_cache_expiry_until_explicit_refresh() {
     let refreshed = f.usage(true);
     assert!(source(&refreshed, "codex")["error"].is_null());
     assert!(source(&refreshed, "codex")["exhausted"].is_null());
+}
+
+#[test]
+fn copilot_gh_failure_and_missing_binary_are_isolated() {
+    let f = Fixture::new();
+    f.script("gh", "exit 1");
+    let snapshot = f.usage(true);
+    assert!(source(&snapshot, "copilot")["error"].is_string());
+    assert!(source(&snapshot, "codex")["error"].is_null());
+    fs::remove_file(f.dir.join("bin/gh")).unwrap();
+    let snapshot = f.usage(true);
+    assert!(source(&snapshot, "copilot")["error"]
+        .as_str()
+        .unwrap()
+        .contains("gh unavailable"));
+    assert!(source(&snapshot, "agy")["error"].is_null());
+}
+
+#[test]
+fn copilot_subagent_matches_task_and_shows_premium_requests() {
+    let f = Fixture::new();
+    let id = "t-20261024-120000-abcd";
+    f.task(id, "copilot", 1000);
+    let status = f.dir.join("state/tasks").join(id).join("status.json");
+    fs::write(
+        &status,
+        json!({"task":id,"agent":"copilot","effort":"low","tokens":{"premium_requests":1}})
+            .to_string(),
+    )
+    .unwrap();
+    for name in ["copilot", "baton:copilot"] {
+        let out =
+            f.input(&json!({"tasks":[{"id":"cp","agentType":name,"description":id}]}).to_string());
+        let row: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(row["content"], "copilot · low · 1 premium request");
+    }
 }

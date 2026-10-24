@@ -1,0 +1,14 @@
+{
+  "copilot_plan": "individual",
+  "access_type_sku": "free_educational_quota",
+  "quota_reset_date": "2026-11-01",
+  "quota_snapshots": {
+    "premium_interactions": {
+      "entitlement": 200,
+      "remaining": 124,
+      "percent_remaining": 62.3,
+      "unlimited": false,
+      "overage_permitted": true
+    }
+  }
+}

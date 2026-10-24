@@ -111,6 +111,11 @@ The answer comes back in the result's `notes`. Keep the synthesis for yourself: 
 mean, which matter, ranking, and anything the user will act on. Before relying on a number,
 re-read it at its cited `file:line`.
 
+Copilot is for bounded read-only checks completed in one prompt, never judgement. Use
+`baton run copilot --brief <file> --mode read` (or relay through `baton:copilot`); each run costs
+one premium request out of 200 a month, whatever the number of tool calls. Baton requires a
+read-only namespace and refuses below its premium-request floor.
+
 ## Quota discipline
 
 - `baton usage` before a batch of work; `baton route` already weighs remaining quota and pace.
@@ -120,4 +125,4 @@ re-read it at its cited `file:line`.
 
 ## Reference
 
-Command maps, lean flags and measured token costs of all three CLIs: the `baton-reference` skill.
+Command maps, lean flags and measured usage costs of the supported CLIs: the `baton-reference` skill.

@@ -26,7 +26,7 @@ reads a few hundred tokens per delegated task, never a worker's transcript.
 ## 2. Commands
 
 ```
-baton run <codex|agy|claude> --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh]
+baton run <codex|agy|copilot|auto> --brief FILE [--mode edit|read] [--effort low|medium|high|xhigh]
           [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json]
           [--auto-fix N] [--detach]
 baton wait <task> [--max SECS]         block until the task ends or SECS pass; prints the result
@@ -38,7 +38,7 @@ baton accept <task> [--squash]         merge the task branch into the base branc
 baton drop <task>                      remove the worktree and branch
 baton show <task> [--diff|--log|--brief]
 baton ps [--json]                      running and recent tasks
-baton usage [--json] [--refresh]       remaining quota of all three, cached 5 minutes
+baton usage [--json] [--refresh]       remaining quota of lead and workers, cached 5 minutes
 baton route --brief FILE [--json]      recommended worker, model and effort, with the reason
 baton ledger [--since DAYS] / baton scorecard   per worker, per task type
 baton statusline subagent              Claude Code subagentStatusLine handler (stdin -> rows)
@@ -240,3 +240,34 @@ aggregates it.
 
 `BATON_HOME` defaults to `~/.local/share/baton`: `tasks/<id>/` (brief.md, status.json, log.txt,
 events.jsonl, result.json), `wt/<id>/` worktrees, `usage.json`, `ledger.jsonl`.
+
+## Copilot read worker
+
+`baton run copilot --brief FILE --mode read` adds a third worker through `worker::Worker`.
+Omitting read mode is a usage error (`copilot runs read briefs only`), and Copilot cannot review
+managed edit tasks. The default model is `gpt-5.6-luna`; `--model`, `BATON_COPILOT_MODEL` and
+`BATON_COPILOT` provide model/binary overrides. Efforts are low, medium, high and xhigh.
+
+The driver reuses Codex's scrubbed environment, process-group cleanup and namespace probe without
+changing Codex or agy invocations. It additionally retains Copilot home and GitHub authentication
+environment variables and forces `COPILOT_AUTO_UPDATE=false`. A successful user/mount namespace
+probe is required and cached once per process. The wrapper mounts a private tmpfs `/tmp`, binds
+`meta.worktree` (the brief's folder), remounts that bind read-only, then execs Copilot. Probe or
+mount failure never falls back to a writable run. `BATON_COPILOT_NO_NS=1` is a test-only hook
+for fake executables, never set by real runs. The complete recipe and measured CLI behavior are
+in `plugins/baton/skills/baton-reference/copilot.md`.
+
+The brief and fixed read-only/result instructions go on stdin. JSONL assistant/tool events drive
+progress. The last JSON object in the final assistant message gives status, notes and questions;
+otherwise the whole message is notes and the result event's exit code determines success. The
+result always has an empty `files_changed`; normal read-mode acceptance checks still run, with
+no automatic fix rounds. Premium request usage from the result event is serialized as
+`tokens.premium_requests` in status, results and ledger; checkpoints are cumulative, not additive.
+
+Usage reads `gh api /copilot_internal/user` and normalizes premium interactions to a monthly
+window, also retaining entitlement, remaining requests, percent remaining and reset date. It uses
+the existing five-minute cache and source error handling. Runs refuse below a default floor of
+20 requests (`BATON_COPILOT_FLOOR` overrides), protecting an account that permits billed overage.
+`baton route --mode read` may add Copilot for difficulty 1–2 only, strictly above that floor;
+default edit routing retains its candidates and scores. Copilot's routing cost is one premium
+request rather than an estimated token count. `baton doctor` includes installation and version.

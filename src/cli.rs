@@ -67,6 +67,7 @@ pub struct Run {
 }
 
 pub struct Route {
+    pub mode: String,
     pub brief: PathBuf,
     pub task_type: Option<String>,
     pub difficulty: Option<u8>,
@@ -213,16 +214,17 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
         }
         "run" => {
             let agent = args.next().unwrap_or_default();
-            if !["codex", "agy", "auto"].contains(&agent.as_str()) {
-                return Err(Error::usage("worker must be codex, agy or auto"));
+            if !["codex", "agy", "copilot", "auto"].contains(&agent.as_str()) {
+                return Err(Error::usage("worker must be codex, agy, copilot or auto"));
             }
             let mut run = Run {
-                model: if agent == "agy" {
-                    "gemini-3.8-flash"
+                model: if agent == "copilot" {
+                    crate::copilot::model()
+                } else if agent == "agy" {
+                    "gemini-3.8-flash".into()
                 } else {
-                    "gpt-6.1-sol"
-                }
-                .into(),
+                    "gpt-6.1-sol".into()
+                },
                 agent,
                 detach: false,
                 auto_fix: 1,
@@ -271,6 +273,9 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                     _ => return Err(Error::usage(format!("unknown option: {flag}"))),
                 }
             }
+            if run.agent == "copilot" && run.mode != "read" {
+                return Err(Error::usage("copilot runs read briefs only"));
+            }
             if run.brief.as_os_str().is_empty() {
                 return Err(Error::usage("--brief is required"));
             }
@@ -290,6 +295,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
         }
         "route" => {
             let mut route = Route {
+                mode: "edit".into(),
                 brief: PathBuf::new(),
                 task_type: None,
                 difficulty: None,
@@ -297,6 +303,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             };
             while let Some(flag) = args.next() {
                 match flag.as_str() {
+                    "--mode" => route.mode = value(&mut args, &flag)?,
                     "--brief" => route.brief = value(&mut args, &flag)?.into(),
                     "--type" => route.task_type = Some(parse_type(value(&mut args, &flag)?)?),
                     "--difficulty" => {
@@ -308,6 +315,9 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             }
             if route.brief.as_os_str().is_empty() {
                 return Err(Error::usage("--brief is required"));
+            }
+            if !["edit", "read"].contains(&route.mode.as_str()) {
+                return Err(Error::usage("--mode must be edit or read"));
             }
             Ok(Cli::Route(route))
         }

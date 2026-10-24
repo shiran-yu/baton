@@ -78,7 +78,7 @@ fn version(agent: &str) -> String {
 }
 fn versions() -> String {
     let mut output = format!("baton: {}\n", env!("CARGO_PKG_VERSION"));
-    for agent in ["claude", "codex", "agy"] {
+    for agent in ["claude", "codex", "agy", "copilot"] {
         output.push_str(&version(agent));
     }
     output
@@ -87,7 +87,7 @@ pub fn run(home: &Path, out: Option<&Path>) -> Res<i32> {
     if let Some(out) = out {
         fs::create_dir_all(out)?;
         fs::write(out.join("versions.txt"), versions())?;
-        for agent in ["claude", "codex", "agy"] {
+        for agent in ["claude", "codex", "agy", "copilot"] {
             if installed(agent) {
                 let dir = out.join(agent);
                 fs::create_dir_all(&dir)?;

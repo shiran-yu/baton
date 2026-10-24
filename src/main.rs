@@ -4,6 +4,7 @@ mod agy;
 mod brief;
 mod cli;
 mod codex;
+mod copilot;
 mod doctor;
 mod git;
 mod hook_adapt;
@@ -124,7 +125,7 @@ fn dispatch(cli: Cli) -> Res<i32> {
         return Ok(0);
     }
     if let Cli::Help = cli {
-        println!("baton run <codex|agy|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton setup [--plan [--json] | --apply ID[,ID...] [--yes]]\nbaton sync [--dry-run] [--to codex,agy] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
+        println!("baton run <codex|agy|copilot|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--mode edit|read] [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton setup [--plan [--json] | --apply ID[,ID...] [--yes]]\nbaton sync [--dry-run] [--to codex,agy] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
         return Ok(0);
     }
     let home = paths::home()?;
@@ -136,7 +137,7 @@ fn dispatch(cli: Cli) -> Res<i32> {
         Cli::Route(options) => {
             let brief = Brief::parse_for_route(fs::read_to_string(&options.brief)?)?;
             let class = route::classify(&brief, options.task_type.as_deref(), options.difficulty)?;
-            let routing = routing(&home, &brief, &class)?;
+            let routing = routing(&home, &brief, &class, &options.mode)?;
             if options.json {
                 println!("{}", serde_json::to_string(&routing)?);
             } else {
@@ -293,7 +294,12 @@ fn dispatch(cli: Cli) -> Res<i32> {
     }
 }
 
-fn routing(home: &Path, brief: &Brief, class: &route::Classification) -> Res<route::Routing> {
+fn routing(
+    home: &Path,
+    brief: &Brief,
+    class: &route::Classification,
+    mode: &str,
+) -> Res<route::Routing> {
     // Hard rules do not depend on availability or the ledger being readable.
     let history = if route::hard_rule(class, brief).is_none() {
         fresh_usage(home);
@@ -307,6 +313,7 @@ fn routing(home: &Path, brief: &Brief, class: &route::Classification) -> Res<rou
         &history,
         &quota::Usage::cached(home),
         paths::now(),
+        mode,
     ))
 }
 
@@ -317,7 +324,9 @@ fn fresh_usage(home: &Path) {
     if std::env::var_os("BATON_NO_USAGE_REFRESH").is_some() {
         return;
     }
-    let Some(snapshot) = usage::cache(home) else { return };
+    let Some(snapshot) = usage::cache(home) else {
+        return;
+    };
     let now = paths::now();
     let reset = snapshot
         .agents
@@ -344,7 +353,7 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
     let brief = Brief::parse_for_route(text)?;
     let class = route::classify(&brief, run.task_type.as_deref(), run.difficulty)?;
     if run.agent == "auto" {
-        let choice = routing(home, &brief, &class)?.choice;
+        let choice = routing(home, &brief, &class, &run.mode)?.choice;
         if choice.agent == "claude" {
             println!(
                 "{}",
@@ -357,10 +366,31 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
         run.model = choice.model.unwrap_or_default();
         run.effort = choice.effort.unwrap_or_default();
     }
+    if run.agent == "copilot" && run.mode != "read" {
+        return Err(Error::usage("copilot runs read briefs only"));
+    }
     brief::lint(&brief.text)?;
-    let (root, has_git) = match git::root() {
+    let read_folder = if run.agent == "copilot" {
+        Some(
+            fs::canonicalize(&run.brief)?
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        )
+    } else {
+        None
+    };
+    let detected_root = if let Some(folder) = &read_folder {
+        git::run(folder, &["rev-parse", "--show-toplevel"]).map(|root| PathBuf::from(root.trim()))
+    } else {
+        git::root()
+    };
+    let (root, has_git) = match detected_root {
         Ok(root) => (root, true),
-        Err(_) if run.mode == "read" => (std::env::current_dir()?, false),
+        Err(_) if run.mode == "read" => (
+            read_folder.clone().unwrap_or(std::env::current_dir()?),
+            false,
+        ),
         Err(e) => return Err(e),
     };
     let (base_commit, base_branch) = if has_git {
@@ -408,6 +438,8 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
         } else {
             home.join("wt").join(&task)
         }
+    } else if let Some(folder) = read_folder {
+        folder
     } else {
         root.clone()
     };
@@ -556,6 +588,8 @@ fn execute(
             Ok(driver) => Box::new(driver),
             Err(e) => Box::new(FailedWorker(Some(e))),
         }
+    } else if meta.agent == "copilot" {
+        Box::new(copilot::Copilot)
     } else {
         Box::new(worker::Codex)
     };
@@ -610,6 +644,7 @@ fn execute(
         if verification.verified
             || !outcome.success
             || !["done", "partial"].contains(&worker.status.as_str())
+            || meta.agent == "copilot"
             || fixes >= meta.auto_fix
         {
             break (outcome, worker, verification);
@@ -649,7 +684,11 @@ fn execute(
     }
     if outcome.exhausted {
         worker = worker::failed(codex::one_line(&outcome.error));
-        usage::mark_exhausted(home, &meta.agent, &worker.notes)?;
+        // Copilot refuses at a reserve floor before making a request. Keep its numeric
+        // balance usable for routing and a subsequent explicit floor override.
+        if meta.agent != "copilot" {
+            usage::mark_exhausted(home, &meta.agent, &worker.notes)?;
+        }
     }
     let result = result::Result {
         task: meta.task.clone(),
@@ -658,7 +697,11 @@ fn execute(
         effort: meta.effort.clone(),
         status: worker.status,
         verified: verification.verified,
-        files_changed: verification.files,
+        files_changed: if meta.agent == "copilot" {
+            Vec::new()
+        } else {
+            verification.files
+        },
         diffstat: verification.diffstat,
         out_of_scope: verification.out_of_scope,
         acceptance: verification.acceptance,

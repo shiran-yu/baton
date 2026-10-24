@@ -85,7 +85,7 @@ Ask Claude Code to delegate ("have Codex implement this with tests", "get agy to
 or drive it yourself:
 
 ```sh
-baton usage                                   # remaining quota of claude, codex, agy
+baton usage                                   # remaining quota of claude, codex, agy, copilot
 baton route --brief .baton/parser.md          # who should do it, with which model and effort
 baton run codex --brief .baton/parser.md      # run, verify, print the result
 baton show <task> --diff                      # read the diff
@@ -105,7 +105,7 @@ implemented by Codex in its own worktree, verified by baton and reviewed before 
 | Part | State |
 |---|---|
 | Codex and Antigravity drivers, worktrees, verification, auto-fix, detach and wait | done |
-| Quota for all three (`baton usage`), status-line and agent-panel rows | done |
+| Quota for the lead and workers (`baton usage`), status-line and agent-panel rows | done |
 | Routing by difficulty and quota, ledger and scorecard | done; priors still being tuned from the ledger |
 | `baton sync` (Claude Code plugins into Codex and agy, with hook conversion) | done; trading plugins stay out of agy until their guards are proven there |
 | `baton setup` and release binaries for macOS and Linux (x86_64, arm64) | done; first tagged release pending |
@@ -118,3 +118,22 @@ Design: [DESIGN.md](DESIGN.md).
 CC BY-NC-SA 4.0. OpenAI's codex plugin, installed as a dependency, is Apache-2.0. Codex, Claude
 Code and Antigravity are products of their respective companies; baton is an independent tool
 and is not affiliated with any of them.
+
+GitHub Copilot CLI is also available for bounded read-only checks:
+
+```sh
+baton run copilot --brief /path/to/folder/brief.md --mode read --effort medium --json
+baton route --brief /path/to/folder/brief.md --mode read --difficulty 1 --json
+```
+
+Copilot runs in the brief's folder, mounted read-only in a required `unshare` namespace with a
+private `/tmp`. It refuses edit mode, missing namespaces, and fewer than 20 premium requests
+remaining (`BATON_COPILOT_FLOOR` overrides). `baton usage` reads its monthly quota through
+`gh api /copilot_internal/user`; missing or failing `gh` produces an error row. Routing can
+select Copilot only for read briefs of difficulty 1–2 above the floor. The default model is
+`gpt-5.6-luna`, overridable with `--model` or `BATON_COPILOT_MODEL`; `BATON_COPILOT` selects the
+binary. One run costs one premium request on the measured 200-request monthly account; the
+result and ledger record `tokens.premium_requests`. Copilot has no automatic fix rounds or
+`baton review --by copilot`. The `baton:copilot` relay and
+[CLI reference](plugins/baton/skills/baton-reference/copilot.md) describe the flags and events.
+`BATON_COPILOT_NO_NS=1` is exclusively a fake-worker test hook; normal runs never set it.

@@ -214,6 +214,7 @@ pub fn recommend(
     history: &[Entry],
     usage: &Usage,
     now: u64,
+    mode: &str,
 ) -> Routing {
     if let Some(reason) = hard_rule(class, brief) {
         let choice = lead(reason);
@@ -234,23 +235,30 @@ pub fn recommend(
             ("agy", "claude-opus-4-6-thinking", true),
         ]);
     }
+    if mode == "read" && d <= 2 {
+        models.push(("copilot", "gpt-5.6-luna", false));
+    }
     let mut candidates = Vec::new();
     for (agent, model, third_party) in models {
         let (p, runs) = posterior(agent, &class.task_type, d, history);
-        let cost = ledger::median(
-            history
-                .iter()
-                .filter(|e| e.agent == agent && e.difficulty == Some(d))
-                .map(Entry::total_tokens)
-                .collect(),
-        )
-        .unwrap_or_else(|| {
-            (if agent == "codex" {
-                [60_000.0, 120_000.0, 250_000.0, 400_000.0]
-            } else {
-                [20_000.0, 40_000.0, 80_000.0, 150_000.0]
-            })[(d - 1) as usize]
-        });
+        let cost = if agent == "copilot" {
+            1.0
+        } else {
+            ledger::median(
+                history
+                    .iter()
+                    .filter(|e| e.agent == agent && e.difficulty == Some(d))
+                    .map(Entry::total_tokens)
+                    .collect(),
+            )
+            .unwrap_or_else(|| {
+                (if agent == "codex" {
+                    [60_000.0, 120_000.0, 250_000.0, 400_000.0]
+                } else {
+                    [20_000.0, 40_000.0, 80_000.0, 150_000.0]
+                })[(d - 1) as usize]
+            })
+        };
         let effort = (!third_party).then(|| {
             ["low", "medium", "high", "xhigh"]
                 [(if agent == "agy" { d.min(3) } else { d } - 1) as usize]
@@ -258,7 +266,11 @@ pub fn recommend(
         });
         let mut c = Candidate {
             agent: agent.into(),
-            model: Some(model.into()),
+            model: Some(if agent == "copilot" {
+                crate::copilot::model()
+            } else {
+                model.into()
+            }),
             effort,
             score: None,
             p: Some(p),
@@ -279,7 +291,9 @@ pub fn recommend(
                 c.remaining = Some(q.remaining);
                 c.window = Some(q.window.clone());
                 c.pace = Some(q.pace);
-                if q.remaining < 1.5 * cost || q.remaining <= 0.0 {
+                if agent == "copilot" && q.remaining <= crate::copilot::floor() {
+                    c.skipped = Some("copilot premium quota at or below floor".into());
+                } else if q.remaining < 1.5 * cost || q.remaining <= 0.0 {
                     c.skipped = Some("remaining quota below 1.5 × expected cost".into());
                 } else {
                     c.score = Some(
@@ -287,9 +301,14 @@ pub fn recommend(
                     );
                 }
                 c.reason = format!(
-                    "{} D{d}, p={p:.2} from {runs} runs, {} tok vs {} left in {}, pace {:.1}{}",
+                    "{} D{d}, p={p:.2} from {runs} runs, {} {} vs {} left in {}, pace {:.1}{}",
                     class.task_type,
                     compact(cost),
+                    if agent == "copilot" {
+                        "premium request"
+                    } else {
+                        "tok"
+                    },
                     compact(q.remaining),
                     q.window,
                     q.pace,
@@ -375,6 +394,7 @@ mod tests {
             &[],
             u,
             THIRD_PARTY_CUTOFF,
+            "edit",
         )
     }
     #[test]
@@ -509,6 +529,7 @@ mod tests {
             &history,
             &usage(),
             THIRD_PARTY_CUTOFF,
+            "edit",
         );
         let codex = r.candidates.iter().find(|c| c.agent == "codex").unwrap();
         assert_eq!(codex.cost, Some(240.0));
@@ -556,7 +577,7 @@ mod tests {
         ] {
             let class = classify(&b, Some("docs"), Some(1)).unwrap();
             assert_eq!(
-                recommend(&class, &b, &[], &usage(), THIRD_PARTY_CUTOFF)
+                recommend(&class, &b, &[], &usage(), THIRD_PARTY_CUTOFF, "edit")
                     .choice
                     .agent,
                 "claude"
@@ -565,7 +586,7 @@ mod tests {
         let b = brief("Build it", "src/main.rs", "true");
         let class = classify(&b, None, Some(4)).unwrap();
         assert_eq!(
-            recommend(&class, &b, &[], &usage(), THIRD_PARTY_CUTOFF)
+            recommend(&class, &b, &[], &usage(), THIRD_PARTY_CUTOFF, "edit")
                 .choice
                 .agent,
             "claude"
@@ -577,7 +598,7 @@ mod tests {
         let class = classify(&b, None, None).unwrap();
         let mut u = usage();
         assert_eq!(
-            recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1)
+            recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit")
                 .candidates
                 .len(),
             3
@@ -586,7 +607,7 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(json!({"id":"3p-weekly","used":0.0}));
-        let before = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1);
+        let before = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
         assert_eq!(before.candidates.len(), 5);
         for model in ["claude-sonnet-4-6", "claude-opus-4-6-thinking"] {
             let c = before
@@ -598,7 +619,10 @@ mod tests {
             assert!(c.skipped.is_none());
         }
         for now in [THIRD_PARTY_CUTOFF, THIRD_PARTY_CUTOFF + 1] {
-            assert_eq!(recommend(&class, &b, &[], &u, now).candidates.len(), 3);
+            assert_eq!(
+                recommend(&class, &b, &[], &u, now, "edit").candidates.len(),
+                3
+            );
         }
     }
 }

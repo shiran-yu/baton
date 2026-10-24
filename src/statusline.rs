@@ -65,6 +65,7 @@ fn agent(row: &Value) -> Option<&str> {
     match row["agentType"].as_str()? {
         "baton:codex" | "codex" => Some("codex"),
         "baton:agy" | "agy" => Some("agy"),
+        "baton:copilot" | "copilot" => Some("copilot"),
         _ => None,
     }
 }
@@ -188,6 +189,12 @@ pub fn subagent(home: &Path, input: &Value) -> Res<String> {
             .as_u64()
             .unwrap_or(0)
             .saturating_add(tokens["output"].as_u64().unwrap_or(0));
+        if let Some(n) = tokens["premium_requests"].as_f64().filter(|n| *n > 0.0) {
+            parts.push(format!(
+                "{n} premium request{}",
+                if n == 1.0 { "" } else { "s" }
+            ));
+        }
         if total > 0 {
             // Codex reports usage only when a turn ends; leave it out until then
             parts.push(if total >= 1000 {

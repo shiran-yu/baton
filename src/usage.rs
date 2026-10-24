@@ -21,6 +21,14 @@ pub struct Window {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Source {
     pub agent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entitlement: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent_remaining: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_reset_date: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub windows: Vec<Window>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,6 +225,54 @@ fn fallback_codex() -> Res<Source> {
         .ok_or_else(invalid)?;
     parse_codex(rates, paths::now(), true)
 }
+pub fn parse_copilot(v: &Value, now: u64) -> Res<Source> {
+    let q = &v["quota_snapshots"]["premium_interactions"];
+    let entitlement = number(&q["entitlement"])?;
+    let remaining = number(&q["remaining"])?;
+    let percent = number(&q["percent_remaining"])?;
+    if entitlement <= 0.0 || !(0.0..=100.0).contains(&percent) {
+        return Err(invalid());
+    }
+    let date = v["quota_reset_date"].as_str().ok_or_else(invalid)?;
+    if date.len() != 10 {
+        return Err(invalid());
+    }
+    let reset = utc_epoch(&format!("{date}T00:00:00Z"))?;
+    let year: u32 = date[..4].parse().map_err(|_| invalid())?;
+    let month: u32 = date[5..7].parse().map_err(|_| invalid())?;
+    let (year, month) = if month == 1 {
+        (year.checked_sub(1).ok_or_else(invalid)?, 12)
+    } else {
+        (year, month - 1)
+    };
+    let start = utc_epoch(&format!("{year:04}-{month:02}-01T00:00:00Z"))?;
+    Ok(Source {
+        agent: "copilot".into(),
+        entitlement: Some(entitlement),
+        remaining: Some(remaining),
+        percent_remaining: Some(percent),
+        quota_reset_date: Some(date.into()),
+        plan_type: v["copilot_plan"].as_str().map(String::from),
+        windows: vec![window(
+            "copilot",
+            "premium-monthly",
+            1.0 - percent / 100.0,
+            reset,
+            reset.checked_sub(start).ok_or_else(invalid)?,
+            now,
+        )?],
+        ..Source::default()
+    })
+}
+fn live_copilot() -> Res<Source> {
+    let raw = process::capture(
+        Command::new("gh").args(["api", "/copilot_internal/user"]),
+        Duration::from_secs(20),
+    )
+    .map_err(|e| Error::new(1, format!("copilot quota via gh unavailable: {e}")))?;
+    parse_copilot(&serde_json::from_str(&raw)?, paths::now())
+}
+
 pub fn parse_agy(v: &Value, now: u64) -> Res<Source> {
     let mut source = Source {
         agent: "agy".into(),
@@ -418,12 +474,14 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
     if !refresh {
         if let Some(snapshot) = cache(home) {
             if paths::now().saturating_sub(snapshot.fetched_at) < 300 {
-                return Ok(snapshot);
+                if snapshot.agents.iter().any(|a| a.agent == "copilot") {
+                    return Ok(snapshot);
+                }
             }
         }
     }
     type Reader = fn() -> Res<Source>;
-    let sources: [(&str, Reader); 3] = [
+    let sources: [(&str, Reader); 4] = [
         ("codex", || live_codex().or_else(|_| fallback_codex())),
         ("agy", || {
             let raw = process::capture(
@@ -438,6 +496,7 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
             parse_agy(&serde_json::from_str(&raw)?, paths::now())
         }),
         ("claude", claude),
+        ("copilot", live_copilot),
     ];
     let handles: Vec<_> = sources
         .into_iter()
@@ -502,7 +561,16 @@ pub fn table(snapshot: &Snapshot) -> String {
             s.agent,
             s.plan_type.as_deref().unwrap_or("")
         ));
-        for w in &s.windows {
+        if s.agent == "copilot" {
+            out.push_str(&format!(
+                "  premium {}/{} left ({}%, resets {})",
+                s.remaining.unwrap_or(0.0),
+                s.entitlement.unwrap_or(0.0),
+                s.percent_remaining.unwrap_or(0.0),
+                s.quota_reset_date.as_deref().unwrap_or("unknown")
+            ));
+        }
+        for w in s.windows.iter().filter(|_| s.agent != "copilot") {
             let (name, amount, verb) = if s.agent == "agy" {
                 (
                     match w.window.as_str() {

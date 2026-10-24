@@ -5,6 +5,8 @@ pub struct Tokens {
     pub input: u64,
     pub cached: u64,
     pub output: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premium_requests: Option<f64>,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Acceptance {

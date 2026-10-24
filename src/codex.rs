@@ -84,13 +84,17 @@ fn tmp_is_bind(mountinfo: &str) -> bool {
 /// a tmpfs /tmp instead, when the kernel allows one.
 fn private_tmp() -> bool {
     tmp_is_bind(&fs::read_to_string("/proc/self/mountinfo").unwrap_or_default())
-        && Command::new("unshare")
-            .args(["-rm", "sh", "-c", "mount -t tmpfs tmpfs /tmp"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+        && probe_private_tmp()
+}
+
+pub(crate) fn probe_private_tmp() -> bool {
+    Command::new("unshare")
+        .args(["-rm", "sh", "-c", "mount -t tmpfs tmpfs /tmp"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 pub struct Outcome {
@@ -135,7 +139,12 @@ pub fn run(
         // Codex's bwrap cannot mask its socket dir under a polyinstantiated /tmp: give it a plain one.
         let mut wrapped = Command::new("unshare");
         wrapped
-            .args(["-rm", "sh", "-c", "mount -t tmpfs tmpfs /tmp && exec \"$0\" \"$@\""])
+            .args([
+                "-rm",
+                "sh",
+                "-c",
+                "mount -t tmpfs tmpfs /tmp && exec \"$0\" \"$@\"",
+            ])
             .arg(binary);
         wrapped
     } else {
@@ -299,6 +308,7 @@ pub fn run(
                                 completed = true;
                                 let usage = &event["usage"];
                                 progress.status.tokens = Tokens {
+                                    premium_requests: None,
                                     input: prior.input
                                         + usage["input_tokens"].as_u64().unwrap_or(0),
                                     cached: prior.cached
@@ -456,6 +466,7 @@ impl Rollout {
                         let usage = &payload["info"]["total_token_usage"];
                         if live_tokens && usage.is_object() {
                             progress.status.tokens = Tokens {
+                                premium_requests: None,
                                 input: usage["input_tokens"].as_u64().unwrap_or(0),
                                 cached: usage["cached_input_tokens"].as_u64().unwrap_or(0),
                                 output: usage["output_tokens"].as_u64().unwrap_or(0),
@@ -561,7 +572,9 @@ mod tests {
         let login = "2038 2036 0:43 /tmp /tmp rw,nodev - tmpfs tmpfs rw\n\
                      2469 2038 254:0 /tmp-inst/u /tmp rw,relatime - ext4 /dev/mapper/local rw\n";
         assert!(tmp_is_bind(login));
-        assert!(!tmp_is_bind("30 1 0:26 / /tmp rw,nosuid - tmpfs tmpfs rw\n"));
+        assert!(!tmp_is_bind(
+            "30 1 0:26 / /tmp rw,nosuid - tmpfs tmpfs rw\n"
+        ));
         assert!(!tmp_is_bind("25 1 8:1 / / rw - ext4 /dev/sda1 rw\n"));
     }
 }
