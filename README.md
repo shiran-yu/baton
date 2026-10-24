@@ -99,7 +99,7 @@ of commands that must pass). See the [lead's playbook](plugins/baton/skills/bato
 
 ## Status
 
-0.1.5, built by baton itself: after the first core, every part was briefed by Claude Code,
+0.1.6, built by baton itself: after the first core, every part was briefed by Claude Code,
 implemented by Codex in its own worktree, verified by baton and reviewed before merging.
 
 | Part | State |
