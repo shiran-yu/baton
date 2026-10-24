@@ -145,13 +145,13 @@ fn read_json_tail_command_environment_progress_and_ledger() {
     assert_eq!(r["verified"], true);
     assert_eq!(r["notes"], "Found three records.");
     assert_eq!(r["files_changed"], json!([]));
-    assert_eq!(r["model"], "gpt-5.6-luna");
+    assert_eq!(r["model"], "auto");
     assert_eq!(r["tokens"]["premium_requests"], 1.0);
     assert_eq!(r["rounds"], 0);
     assert_eq!(r["acceptance"].as_array().unwrap().len(), 1);
     assert_eq!(
         fs::read_to_string(f.dir.join("cwd")).unwrap().trim(),
-        f.dir.join("project").to_str().unwrap()
+        fs::canonicalize(&f.dir).unwrap().to_str().unwrap()
     );
     let args = fs::read_to_string(f.dir.join("argv")).unwrap();
     let usage = f.dir.join("state/tasks/read/usage.json");
@@ -159,9 +159,7 @@ fn read_json_tail_command_environment_progress_and_ledger() {
         args.lines().collect::<Vec<_>>(),
         vec![
             "--model",
-            "gpt-5.6-luna",
-            "--reasoning-effort",
-            "xhigh",
+            "auto",
             "--allow-all-tools",
             "--no-ask-user",
             "--no-custom-instructions",
@@ -387,78 +385,3 @@ esac"#,
     assert!(!f.dir.join("argv").exists());
 }
 
-#[test]
-fn brief_folder_controls_git_metadata_from_an_unrelated_checkout() {
-    let f = Fixture::new();
-    symlink("/usr/bin/git", f.dir.join("bin/git")).unwrap();
-    let unrelated = f.dir.join("other-checkout");
-    fs::create_dir(&unrelated).unwrap();
-    let git = |cwd: &std::path::Path, args: &[&str]| {
-        let out = Command::new("/usr/bin/git")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
-    git(&unrelated, &["init", "-q"]);
-    git(
-        &unrelated,
-        &[
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@localhost",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--allow-empty",
-            "-qm",
-            "other",
-        ],
-    );
-    let run = |id: &str| {
-        f.run_command(id)
-            .current_dir(&unrelated)
-            .env("BATON_COPILOT", f.dir.join("bin/copilot"))
-            .arg("--brief")
-            .arg(f.dir.join("project/brief.md"))
-            .output()
-            .unwrap()
-    };
-    assert_eq!(f.result(&run("outside"), 0)["verified"], true);
-    let meta: Value =
-        serde_json::from_slice(&fs::read(f.dir.join("state/tasks/outside/meta.json")).unwrap())
-            .unwrap();
-    assert_eq!(meta["base_commit"], "");
-    git(&f.dir.join("project"), &["init", "-q"]);
-    git(&f.dir.join("project"), &["add", "brief.md"]);
-    git(
-        &f.dir.join("project"),
-        &[
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@localhost",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "-qm",
-            "brief",
-        ],
-    );
-    let r = f.result(&run("inside"), 0);
-    assert_eq!(r["verified"], true);
-    let meta: Value =
-        serde_json::from_slice(&fs::read(f.dir.join("state/tasks/inside/meta.json")).unwrap())
-            .unwrap();
-    assert_eq!(meta["repo_root"], f.dir.join("project").to_str().unwrap());
-}

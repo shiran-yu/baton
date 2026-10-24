@@ -236,7 +236,7 @@ pub fn recommend(
         ]);
     }
     if mode == "read" && d <= 2 {
-        models.push(("copilot", "gpt-5.6-luna", false));
+        models.push(("copilot", "auto", false));
     }
     let mut candidates = Vec::new();
     for (agent, model, third_party) in models {

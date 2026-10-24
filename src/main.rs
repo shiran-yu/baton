@@ -370,16 +370,8 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
         return Err(Error::usage("copilot runs read briefs only"));
     }
     brief::lint(&brief.text)?;
-    let read_folder = if run.agent == "copilot" {
-        Some(
-            fs::canonicalize(&run.brief)?
-                .parent()
-                .unwrap()
-                .to_path_buf(),
-        )
-    } else {
-        None
-    };
+    // Copilot reads the same folder as Codex in read mode: the git root, else the current folder.
+    let read_folder: Option<PathBuf> = None;
     let detected_root = if let Some(folder) = &read_folder {
         git::run(folder, &["rev-parse", "--show-toplevel"]).map(|root| PathBuf::from(root.trim()))
     } else {

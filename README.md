@@ -126,12 +126,13 @@ baton run copilot --brief /path/to/folder/brief.md --mode read --effort medium -
 baton route --brief /path/to/folder/brief.md --mode read --difficulty 1 --json
 ```
 
-Copilot runs in the brief's folder, mounted read-only in a required `unshare` namespace with a
+Copilot runs in the folder Codex's read mode uses (the git root, else the current folder), mounted read-only in a required `unshare` namespace with a
 private `/tmp`. It refuses edit mode, missing namespaces, and fewer than 20 premium requests
 remaining (`BATON_COPILOT_FLOOR` overrides). `baton usage` reads its monthly quota through
 `gh api /copilot_internal/user`; missing or failing `gh` produces an error row. Routing can
 select Copilot only for read briefs of difficulty 1–2 above the floor. The default model is
-`gpt-5.6-luna`, overridable with `--model` or `BATON_COPILOT_MODEL`; `BATON_COPILOT` selects the
+`auto` (the student plan refuses every explicit model; auto picks `gpt-5.6-luna`), overridable with
+`--model` or `BATON_COPILOT_MODEL`; `BATON_COPILOT` selects the
 binary. One run costs one premium request on the measured 200-request monthly account; the
 result and ledger record `tokens.premium_requests`. Copilot has no automatic fix rounds or
 `baton review --by copilot`. The `baton:copilot` relay and

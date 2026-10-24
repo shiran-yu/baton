@@ -245,14 +245,14 @@ events.jsonl, result.json), `wt/<id>/` worktrees, `usage.json`, `ledger.jsonl`.
 
 `baton run copilot --brief FILE --mode read` adds a third worker through `worker::Worker`.
 Omitting read mode is a usage error (`copilot runs read briefs only`), and Copilot cannot review
-managed edit tasks. The default model is `gpt-5.6-luna`; `--model`, `BATON_COPILOT_MODEL` and
-`BATON_COPILOT` provide model/binary overrides. Efforts are low, medium, high and xhigh.
+managed edit tasks. The default model is `auto`, which takes no effort flag; `--model`, `BATON_COPILOT_MODEL` and
+`BATON_COPILOT` provide model/binary overrides. Efforts are low, medium, high and xhigh for an explicit model.
 
 The driver reuses Codex's scrubbed environment, process-group cleanup and namespace probe without
 changing Codex or agy invocations. It additionally retains Copilot home and GitHub authentication
 environment variables and forces `COPILOT_AUTO_UPDATE=false`. A successful user/mount namespace
 probe is required and cached once per process. The wrapper mounts a private tmpfs `/tmp`, binds
-`meta.worktree` (the brief's folder), remounts that bind read-only, then execs Copilot. Probe or
+`meta.worktree` (the git root, else the current folder, as in Codex's read mode), remounts that bind read-only, then execs Copilot. Probe or
 mount failure never falls back to a writable run. `BATON_COPILOT_NO_NS=1` is a test-only hook
 for fake executables, never set by real runs. The complete recipe and measured CLI behavior are
 in `plugins/baton/skills/baton-reference/copilot.md`.

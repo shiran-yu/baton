@@ -1,8 +1,10 @@
 # GitHub Copilot CLI
 
 Measured 2026-10-24 with Copilot 1.0.103, plan `individual`, SKU `free_educational_quota`.
-Only `gpt-5.6-luna` and `auto` (which selects it) were accepted on this account. Other catalog
-models returned `Error: Model "<id>" from --model flag is not available.` before making a request.
+Only `--model auto` was accepted on this account; it routes to `gpt-5.6-luna`, the one model the
+plan may use (`availableModels` in the `session.auto_mode_resolved` event). Every explicit model,
+`gpt-5.6-luna` included, returned `Error: Model "<id>" from --model flag is not available.` before
+making a request, and `auto` refuses `--reasoning-effort`.
 One `-p` run costs one premium request regardless of the number of tool calls, from 200 per month.
 These are measurements for this account and version, not promises about other plans.
 
@@ -17,7 +19,7 @@ The driver sends the brief plus a fixed read-only/result-JSON tail on stdin. Cop
 as the prompt when `-p` is absent; `-p '<prompt>'` is the explicit prompt alternative.
 
 ```sh
-copilot --model gpt-5.6-luna --reasoning-effort medium \
+copilot --model auto \
   --allow-all-tools --no-ask-user --no-custom-instructions --disable-builtin-mcps \
   --output-format json --usage-output-file '<task dir>/usage.json'
 ```
@@ -25,7 +27,8 @@ copilot --model gpt-5.6-luna --reasoning-effort medium \
 `BATON_COPILOT` overrides the binary (relative paths resolve before changing cwd), and
 `BATON_COPILOT_MODEL` or `--model` overrides the default model. Baton accepts efforts `low`,
 `medium`, `high`, `xhigh`; the measured CLI additionally accepts `none`, `minimal`, and `max`.
-The cwd is the brief's folder, stored as `meta.worktree`. There is no edit mode or
+The effort is passed only with an explicit model. The cwd is the folder Codex's read mode uses
+(the git root, else the current folder), stored as `meta.worktree`. There is no edit mode or
 `baton review --by copilot`, and no automatic retry after failed acceptance.
 
 Workers receive the `codex::scrub` environment plus `COPILOT_HOME`, `GH_TOKEN`, `GITHUB_TOKEN`,

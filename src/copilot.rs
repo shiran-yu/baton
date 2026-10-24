@@ -23,11 +23,13 @@ const TAIL: &str = r#"
 You are read-only. Inspect the files needed for this brief; never edit, create, or delete files.
 End your reply with ONE JSON object of this shape:
 {"status": "done"|"blocked"|"needs_decision", "notes": "...", "questions": [...]}
-Put your findings in notes and any decisions needed from the lead in questions.
+notes is the whole answer the Goal asks for, in the shape it asks for, with every number and its file:line;
+the lead reads nothing else. Put any decisions needed from the lead in questions.
 "#;
 
 pub fn model() -> String {
-    std::env::var("BATON_COPILOT_MODEL").unwrap_or_else(|_| "gpt-5.6-luna".into())
+    // "auto": the student plan rejects every explicit --model; auto picks from what the account may use.
+    std::env::var("BATON_COPILOT_MODEL").unwrap_or_else(|_| "auto".into())
 }
 
 pub fn floor() -> f64 {
@@ -142,12 +144,13 @@ impl Worker for Copilot {
         }
         quota_guard()?;
         let mut command = command(meta)?;
+        command.args(["--model", &meta.model]);
+        // Copilot refuses a reasoning effort for "auto".
+        if meta.model != "auto" {
+            command.args(["--reasoning-effort", &meta.effort]);
+        }
         command
             .args([
-                "--model",
-                &meta.model,
-                "--reasoning-effort",
-                &meta.effort,
                 "--allow-all-tools",
                 "--no-ask-user",
                 "--no-custom-instructions",
