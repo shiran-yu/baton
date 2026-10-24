@@ -67,6 +67,32 @@ pub fn scrub(command: &mut Command, task: &str) {
     command.env("BATON_TASK", task);
 }
 
+/// Whether the top mount on /tmp is a bind of a subdirectory (pam_namespace, e.g. Isambard login nodes).
+fn tmp_is_bind(mountinfo: &str) -> bool {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(' ').collect();
+            (fields.len() > 4 && fields[4] == "/tmp").then(|| fields[3] != "/")
+        })
+        .last()
+        .unwrap_or(false)
+}
+
+/// Codex 0.163's read-only and workspace-write sandboxes fail on such a /tmp ("bwrap: Can't mkdir
+/// parents for /local/tmp-inst/<user>/codex-daemon-<uid>"); run it in a user+mount namespace with
+/// a tmpfs /tmp instead, when the kernel allows one.
+fn private_tmp() -> bool {
+    tmp_is_bind(&fs::read_to_string("/proc/self/mountinfo").unwrap_or_default())
+        && Command::new("unshare")
+            .args(["-rm", "sh", "-c", "mount -t tmpfs tmpfs /tmp"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+}
+
 pub struct Outcome {
     pub timed_out: bool,
     pub exhausted: bool,
@@ -104,7 +130,17 @@ pub fn run(
     } else {
         binary
     };
-    let mut command = Command::new(binary);
+    // let mut command = Command::new(binary);
+    let mut command = if private_tmp() {
+        // Codex's bwrap cannot mask its socket dir under a polyinstantiated /tmp: give it a plain one.
+        let mut wrapped = Command::new("unshare");
+        wrapped
+            .args(["-rm", "sh", "-c", "mount -t tmpfs tmpfs /tmp && exec \"$0\" \"$@\""])
+            .arg(binary);
+        wrapped
+    } else {
+        Command::new(binary)
+    };
     command.arg("exec");
     if resume {
         command.arg("resume").arg(
@@ -513,4 +549,19 @@ pub fn shell(
     }
     fs::remove_file(output)?;
     Ok((passed, crate::result::tail(&text, 300)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tmp_is_bind;
+
+    #[test]
+    fn polyinstantiated_tmp_is_detected() {
+        // Isambard login44: a tmpfs on /tmp, then the per-user bind on top of it.
+        let login = "2038 2036 0:43 /tmp /tmp rw,nodev - tmpfs tmpfs rw\n\
+                     2469 2038 254:0 /tmp-inst/u /tmp rw,relatime - ext4 /dev/mapper/local rw\n";
+        assert!(tmp_is_bind(login));
+        assert!(!tmp_is_bind("30 1 0:26 / /tmp rw,nosuid - tmpfs tmpfs rw\n"));
+        assert!(!tmp_is_bind("25 1 8:1 / / rw - ext4 /dev/sda1 rw\n"));
+    }
 }
