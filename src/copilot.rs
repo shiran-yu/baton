@@ -1,6 +1,6 @@
 use crate::{
     codex::{self, Outcome, WorkerProcess},
-    paths,
+    paths, process,
     result::{Meta, Worker as Report},
     status::Progress,
     usage,
@@ -9,6 +9,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
+    ffi::OsString,
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     os::unix::process::CommandExt,
@@ -45,24 +46,55 @@ fn quota_guard() -> Res<()> {
     usage::read(&home, false)?;
     let quota = crate::quota::Usage::cached(&home)
         .quota("copilot", false)
-        .map_err(|e| Error::new(4, format!("cannot check copilot premium quota: {e}")))?;
-    if quota.remaining < floor() {
+        .map_err(|e| {
+            if e == usage::COPILOT_ENDED {
+                Error::new(4, e)
+            } else {
+                Error::new(4, format!("cannot check copilot premium quota: {e}"))
+            }
+        })?;
+    // Same comparison as routing (route::short): a balance at the floor is refused.
+    if quota.remaining <= floor() {
         return Err(Error::new(4, format!(
-            "copilot premium quota has {} requests remaining, below floor {}; refusing to risk billed overage",
+            "copilot premium quota has {} requests remaining, at or below floor {}; refusing to risk billed overage",
             quota.remaining, floor()
         )));
     }
     Ok(())
 }
 
-fn command(meta: &Meta) -> Res<Command> {
+fn binary() -> Res<OsString> {
     let binary = std::env::var_os("BATON_COPILOT").unwrap_or_else(|| "copilot".into());
-    let binary = if Path::new(&binary).is_relative() && Path::new(&binary).components().count() > 1
-    {
-        std::env::current_dir()?.join(binary).into_os_string()
-    } else {
-        binary
-    };
+    Ok(
+        if Path::new(&binary).is_relative() && Path::new(&binary).components().count() > 1 {
+            std::env::current_dir()?.join(binary).into_os_string()
+        } else {
+            binary
+        },
+    )
+}
+
+// Whether the installed CLI's --help lists a flag; --help is read once per process.
+fn supports(flag: &str) -> bool {
+    static HELP: OnceLock<String> = OnceLock::new();
+    let help = HELP.get_or_init(|| {
+        binary()
+            .and_then(|binary| {
+                process::capture(
+                    Command::new(binary)
+                        .arg("--help")
+                        .env("COPILOT_AUTO_UPDATE", "false"),
+                    Duration::from_secs(20),
+                )
+            })
+            .unwrap_or_default()
+    });
+    help.split(|c: char| c.is_whitespace() || c == ',')
+        .any(|word| word == flag)
+}
+
+fn command(meta: &Meta) -> Res<Command> {
+    let binary = binary()?;
     // Explicit test hook: integration tests use a fake worker, never a real writable Copilot.
     if std::env::var("BATON_COPILOT_NO_NS").as_deref() == Ok("1") {
         return Ok(Command::new(binary));
@@ -148,6 +180,13 @@ impl Worker for Copilot {
         // Copilot refuses a reasoning effort for "auto".
         if meta.model != "auto" {
             command.args(["--reasoning-effort", &meta.effort]);
+        }
+        // Leaner sessions, each flag only where this CLI version has it.
+        if supports("--context") {
+            command.args(["--context", "default"]);
+        }
+        if supports("--disable-client-telemetry") {
+            command.arg("--disable-client-telemetry");
         }
         command
             .args([

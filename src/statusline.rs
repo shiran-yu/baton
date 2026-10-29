@@ -8,10 +8,15 @@ use std::{
 };
 
 pub fn run(home: &Path, mode: &str) {
-    if mode == "line" {
+    if mode == "line" || mode == "hint" {
         if let Some(snapshot) = usage::cache(home) {
             let line = compact(&snapshot);
-            if !line.is_empty() {
+            if line.is_empty() {
+            } else if mode == "hint" {
+                // Same eligibility rule as routing, so the advice follows the cached quota.
+                let advice = crate::route::hint(&crate::quota::Usage::cached(home));
+                println!("{line} → read-only research and bounded code: {advice}");
+            } else {
                 println!("{line}");
             }
         }

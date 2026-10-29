@@ -174,7 +174,7 @@ fn agy_tool(command: &str) -> Value {
 }
 
 #[test]
-fn sync_dry_run_generates_native_agy_and_plans_codex_without_installing() {
+fn sync_dry_run_changes_nothing_and_agy_sync_generates_native_plugins() {
     let f = Fixture::new();
     f.inventory();
     let out = f.call(&["sync", "--dry-run"]);
@@ -182,15 +182,22 @@ fn sync_dry_run_generates_native_agy_and_plans_codex_without_installing() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("alpha codex: skipped (no codex manifest)"));
     assert!(text.contains("trade agy: skipped (trading guards"));
+    assert!(text.contains("alpha agy: skipped (dry-run; would install)"));
     assert!(text.contains("'plugin' 'marketplace' 'add'"));
     assert!(text.contains("'plugin' 'add' 'catalog@own-codex'"));
+    assert!(text.contains("'plugin' 'validate' '--json'"));
     let calls = f.calls();
     assert!(calls.contains("codex plugin marketplace list\n"));
     assert!(calls.contains("codex plugin list --json\n"));
     assert!(!calls.contains("codex plugin add"));
     assert!(!calls.contains("codex plugin marketplace add"));
-    assert!(!calls.contains("agy plugin install"));
+    // A dry run runs no agy command and writes nothing.
+    assert!(!calls.contains("agy "));
+    assert!(!f.dir.join("state/agy-plugins").exists());
+    success(&f.call(&["sync", "--to", "agy"]));
+    let calls = f.calls();
     assert_eq!(calls.matches("agy plugin validate").count(), 2);
+    assert_eq!(calls.matches("agy plugin install").count(), 2);
     assert!(!f.dir.join("state/agy-plugins/trade").exists());
     assert_eq!(
         f.read_json("state/agy-plugins/alpha/plugin.json"),
@@ -311,7 +318,7 @@ fn sync_dry_run_generates_native_agy_and_plans_codex_without_installing() {
     );
     assert_eq!(
         f.read_json("state/agy-plugins/alpha/.baton-sync.json")["installed"],
-        false
+        true
     );
     assert!(!f.dir.join("sources/alpha/plugin.json").exists());
 }
@@ -377,7 +384,6 @@ fn sync_filters_config_trading_and_validation_errors() {
     f.inventory();
     success(&f.call(&[
         "sync",
-        "--dry-run",
         "--to",
         "agy",
         "--only",
@@ -430,6 +436,116 @@ fn codex_available_entries_are_installed_but_other_marketplace_does_not_count() 
         assert!(f.calls().contains("codex plugin add catalog@own-codex"));
         assert!(!f.calls().contains("marketplace add"));
     }
+}
+
+#[test]
+fn copilot_registers_claude_marketplace_installs_once_and_honours_dry_run() {
+    let f = Fixture::new();
+    f.inventory();
+    f.script(
+        "copilot",
+        r#"
+printf '%s\n' "copilot $*" >> "$BATON_HOME/calls"
+printf '%s\n' "auto-update=$COPILOT_AUTO_UPDATE" >> "$BATON_HOME/copilot-env"
+case "$*" in
+  'plugin marketplace list') /bin/cat "$BATON_HOME/copilot-markets.txt" ;;
+  'plugin list --json') /bin/cat "$BATON_HOME/copilot-list.json" ;;
+  'plugin marketplace add '*|'plugin install '*) ;;
+  *) exit 9 ;;
+esac
+"#,
+    );
+    f.write("state/copilot-markets.txt", "No marketplaces registered\n");
+    f.write_json("state/copilot-list.json", &json!([]));
+    f.write_json(
+        "market/.claude-plugin/marketplace.json",
+        &json!({"name":"my-develop-plugins","plugins":[{"name":"alpha"},{"name":"catalog"}]}),
+    );
+    let market = f.dir.join("market");
+    let sync = |args: &[&str]| {
+        let out = f
+            .command()
+            .env("BATON_COPILOT", f.dir.join("bin/copilot"))
+            .args(args)
+            .output()
+            .unwrap();
+        success(&out);
+        String::from_utf8(out.stdout).unwrap()
+    };
+    // Copilot joins the default hosts once its CLI is installed; a dry run only plans.
+    let text = sync(&["sync", "--dry-run"]);
+    assert!(text.contains("alpha copilot: skipped (dry-run; would install)"));
+    assert!(text.contains("trade copilot: skipped (trading guards not proven for copilot"));
+    assert!(text.contains("'plugin' 'install' 'alpha@my-develop-plugins'"));
+    let calls = f.calls();
+    assert!(!calls.contains("copilot plugin install"));
+    assert!(!calls.contains("copilot plugin marketplace add"));
+    f.write("state/calls", "");
+    let text = sync(&["sync", "--to", "copilot"]);
+    assert!(text.contains("alpha copilot: installed"));
+    let calls = f.calls();
+    assert_eq!(
+        calls
+            .matches(&format!(
+                "copilot plugin marketplace add {}\n",
+                market.display()
+            ))
+            .count(),
+        1
+    );
+    for id in ["alpha@my-develop-plugins", "catalog@my-develop-plugins"] {
+        assert!(calls.contains(&format!("copilot plugin install {id}\n")));
+    }
+    assert!(!calls.contains("trade"));
+    // Already registered and installed: nothing to do.
+    f.write(
+        "state/copilot-markets.txt",
+        &format!("my-develop-plugins  {}\n", market.display()),
+    );
+    f.write_json(
+        "state/copilot-list.json",
+        &json!([{"name":"alpha","marketplace":"my-develop-plugins"},{"name":"catalog","marketplace":"my-develop-plugins"}]),
+    );
+    f.write("state/calls", "");
+    let text = sync(&["sync", "--to", "copilot"]);
+    assert!(text.contains("alpha copilot: up to date"));
+    assert!(!f.calls().contains("marketplace add"));
+    assert!(!f.calls().contains("plugin install"));
+    // Every copilot call runs with auto-update off.
+    let env = fs::read_to_string(f.dir.join("state/copilot-env")).unwrap();
+    assert!(env.lines().count() > 3);
+    assert!(env.lines().all(|line| line == "auto-update=false"), "{env}");
+}
+
+#[test]
+fn sync_commands_time_out_and_kill_their_group() {
+    let f = Fixture::new();
+    f.inventory();
+    f.write_json(
+        "market/.agents/plugins/marketplace.json",
+        &json!({"name":"own-codex","plugins":[]}),
+    );
+    // A first-run prompt that never returns, with a background child holding the pipes.
+    f.script(
+        "codex",
+        "(/bin/sleep 3; echo survived > \"$BATON_HOME/survived\") &\n/bin/sleep 30\n",
+    );
+    let started = std::time::Instant::now();
+    let out = f
+        .command()
+        .env("BATON_SYNC_TIMEOUT", "1")
+        .args(["sync", "--to", "codex"])
+        .output()
+        .unwrap();
+    assert!(started.elapsed().as_secs() < 20);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("timed out after 1s"), "{text}");
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    assert!(!f.dir.join("state/survived").exists());
 }
 
 #[test]

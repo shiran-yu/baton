@@ -208,6 +208,42 @@ pub fn hard_rule(class: &Classification, brief: &Brief) -> Option<&'static str> 
     }
 }
 
+// Expected cost with no history: tokens, or premium requests for copilot.
+fn default_cost(agent: &str, d: u8) -> f64 {
+    match agent {
+        "copilot" => 1.0,
+        "codex" => [60_000.0, 120_000.0, 250_000.0, 400_000.0][(d - 1) as usize],
+        _ => [20_000.0, 40_000.0, 80_000.0, 150_000.0][(d - 1) as usize],
+    }
+}
+
+// The eligibility rule: why a worker with this quota cannot take a task of this cost.
+pub fn short(agent: &str, remaining: f64, cost: f64) -> Option<&'static str> {
+    if agent == "copilot" && remaining <= crate::copilot::floor() {
+        Some("copilot premium quota at or below floor")
+    } else if remaining < 1.5 * cost || remaining <= 0.0 {
+        Some("remaining quota below 1.5 × expected cost")
+    } else {
+        None
+    }
+}
+
+/// Prompt-hook advice from cached quota: the first worker eligible for a default D2 task.
+pub fn hint(usage: &Usage) -> String {
+    for agent in ["codex", "agy", "copilot"] {
+        let quota = usage.quota(agent, false);
+        if quota.is_ok_and(|q| short(agent, q.remaining, default_cost(agent, 2)).is_none()) {
+            let read = if agent == "copilot" {
+                " (read-only)"
+            } else {
+                ""
+            };
+            return format!("baton:{agent} first{read}");
+        }
+    }
+    "workers exhausted; keep the work with the lead".into()
+}
+
 pub fn recommend(
     class: &Classification,
     brief: &Brief,
@@ -225,16 +261,13 @@ pub fn recommend(
         };
     }
     let d = class.difficulty;
-    let mut models = vec![
-        ("codex", "gpt-6.1-sol", false),
-        ("agy", "gemini-3.8-flash", false),
-    ];
+    // Quota and task type pick the worker, never a weaker model or effort (user 2026-10-29).
+    // agy: Claude Opus on the 3p bucket until it leaves agy, else Gemini; strongest first.
+    let mut models = vec![("codex", crate::codex::MODEL, false)];
     if now < THIRD_PARTY_CUTOFF && usage.has_third_party() {
-        models.extend([
-            ("agy", "claude-sonnet-4-6", true),
-            ("agy", "claude-opus-4-6-thinking", true),
-        ]);
+        models.push(("agy", crate::agy::MODELS[0], true));
     }
+    models.push(("agy", crate::agy::GEMINI, false));
     if mode == "read" && d <= 2 {
         models.push(("copilot", "auto", false));
     }
@@ -242,7 +275,7 @@ pub fn recommend(
     for (agent, model, third_party) in models {
         let (p, runs) = posterior(agent, &class.task_type, d, history);
         let cost = if agent == "copilot" {
-            1.0
+            default_cost(agent, d)
         } else {
             ledger::median(
                 history
@@ -251,19 +284,14 @@ pub fn recommend(
                     .map(Entry::total_tokens)
                     .collect(),
             )
-            .unwrap_or_else(|| {
-                (if agent == "codex" {
-                    [60_000.0, 120_000.0, 250_000.0, 400_000.0]
-                } else {
-                    [20_000.0, 40_000.0, 80_000.0, 150_000.0]
-                })[(d - 1) as usize]
-            })
+            .unwrap_or_else(|| default_cost(agent, d))
         };
-        let effort = (!third_party).then(|| {
-            ["low", "medium", "high", "xhigh"]
-                [(if agent == "agy" { d.min(3) } else { d } - 1) as usize]
-                .into()
-        });
+        // agy's effort is the highest `agy models` lists, found at run time.
+        let effort = match agent {
+            "codex" => Some(crate::codex::EFFORT.into()),
+            "copilot" => Some(["low", "medium", "high", "xhigh"][(d - 1) as usize].into()),
+            _ => None,
+        };
         let mut c = Candidate {
             agent: agent.into(),
             model: Some(if agent == "copilot" {
@@ -291,10 +319,13 @@ pub fn recommend(
                 c.remaining = Some(q.remaining);
                 c.window = Some(q.window.clone());
                 c.pace = Some(q.pace);
-                if agent == "copilot" && q.remaining <= crate::copilot::floor() {
-                    c.skipped = Some("copilot premium quota at or below floor".into());
-                } else if q.remaining < 1.5 * cost || q.remaining <= 0.0 {
-                    c.skipped = Some("remaining quota below 1.5 × expected cost".into());
+                if let Some(reason) = short(agent, q.remaining, cost) {
+                    c.skipped = Some(reason.into());
+                } else if candidates
+                    .iter()
+                    .any(|o: &Candidate| o.agent == agent && o.score.is_some())
+                {
+                    c.skipped = Some(format!("a stronger {agent} model is eligible"));
                 } else {
                     c.score = Some(
                         p * 2_f64.powi(i32::from(d) - 1) - cost / q.remaining * q.pace.max(1.0),
@@ -540,7 +571,8 @@ mod tests {
         let mut u = usage();
         let normal = recommend_brief(&b, &u);
         assert_eq!(normal.choice.agent, "codex");
-        assert_eq!(normal.choice.effort.as_deref(), Some("medium"));
+        assert_eq!(normal.choice.model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(normal.choice.effort.as_deref(), Some("xhigh"));
         assert_eq!(normal.runner_up.unwrap().agent, "agy");
         assert!((normal.choice.score.unwrap() - (1.5 - 120_000.0 / 2_250_000.0)).abs() < 1e-10);
         assert!(normal.choice.reason.contains("pace 0.4"));
@@ -608,21 +640,30 @@ mod tests {
             .unwrap()
             .push(json!({"id":"3p-weekly","used":0.0}));
         let before = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
-        assert_eq!(before.candidates.len(), 5);
-        for model in ["claude-sonnet-4-6", "claude-opus-4-6-thinking"] {
-            let c = before
-                .candidates
+        assert_eq!(before.candidates.len(), 4);
+        let agy = |r: &Routing, model: &str| {
+            r.candidates
                 .iter()
                 .find(|c| c.model.as_deref() == Some(model))
-                .unwrap();
-            assert!(c.effort.is_none());
-            assert!(c.skipped.is_none());
-        }
+                .cloned()
+                .unwrap()
+        };
+        let opus = agy(&before, "claude-opus-4-6-thinking");
+        assert!(opus.effort.is_none() && opus.skipped.is_none() && opus.score.is_some());
+        // agy runs its strongest eligible model, whatever the Gemini bucket holds.
+        let gemini = agy(&before, "gemini-3.8-flash");
+        assert_eq!(
+            gemini.skipped.as_deref(),
+            Some("a stronger agy model is eligible")
+        );
+        assert!(gemini.score.is_none());
+        u.0["agy"]["windows"][1]["used"] = json!(0.999);
+        let short = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
+        assert!(agy(&short, "gemini-3.8-flash").score.is_some());
         for now in [THIRD_PARTY_CUTOFF, THIRD_PARTY_CUTOFF + 1] {
-            assert_eq!(
-                recommend(&class, &b, &[], &u, now, "edit").candidates.len(),
-                3
-            );
+            let after = recommend(&class, &b, &[], &u, now, "edit");
+            assert_eq!(after.candidates.len(), 3);
+            assert!(agy(&after, "gemini-3.8-flash").effort.is_none());
         }
     }
 }

@@ -1,4 +1,4 @@
-# Codex CLI for baton (codex-cli 0.163.0, model gpt-6.1-sol)
+# Codex CLI for baton (codex-cli 0.163.0; workers run gpt-6-astra at xhigh)
 
 Raw help of every command and subcommand: `help/codex/` (77 files). Prompt composition measured
 from captured request bodies: `codex-prompt-anatomy.md`. Sources: learn.chatgpt.com/docs (CLI,
@@ -36,20 +36,33 @@ non-interactive mode, config reference, hooks, build-plugins, app-server), local
 `-o FILE` (final message to a file), `--json` (JSONL events on stdout), `-i FILE` (images),
 `--strict-config`. `--full-auto` was removed: use `-s workspace-write`.
 
-## Headless recipes
+## Models
+
+`codex debug models` (free, 2026-10-29) lists `gpt-6.1-sol` ("Latest workhorse model"),
+`gpt-6-astra` ("Frontier intelligence for the most demanding work"), `gpt-6.1-terra`, `gpt-6-sol`,
+`gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (hidden: `gpt-reserve`,
+`codex-auto-review`). Efforts: `low`, `medium`, `high`, `xhigh`, `max` ("Maximum reasoning depth
+for the hardest problems") and, except on the luna models, `ultra` ("Maximum reasoning with
+automatic task delegation"). The user's `~/.codex/config.toml` runs `gpt-6-astra` at `xhigh`.
+
+## Headless recipes (baton's workers)
+
+Workers run the strongest model at `xhigh` with the user's config, plugins, skills, trusted hooks
+and MCP servers: reliability over cost (user, 2026-10-29). `--model` and `--effort` override.
 
 ```sh
-# edit in a worktree, structured result, lean prompt
-codex exec --ignore-user-config -m gpt-6.1-sol -c model_reasoning_effort="medium" \
-  -c model_reasoning_summary="none" -c model_verbosity="low" -c web_search="disabled" \
-  -c features.apps=false -s workspace-write -C "$WT" \
+# edit in a worktree, structured result; web search as Codex defaults
+codex exec -m gpt-6-astra -c model_reasoning_effort="xhigh" \
+  -c model_reasoning_summary="none" -c model_verbosity="low" -c features.apps=false \
+  -s workspace-write -C "$WT" \
   --output-schema schema.json -o last.json --json - < brief.md > events.jsonl
 
-# fix round on the same thread (prefix cached)
-codex exec resume "$THREAD" --ignore-user-config ... --json - < fixes.md
+# fix round on the same thread (prefix cached); the sandbox goes through -c
+codex exec resume "$THREAD" -m gpt-6-astra ... -c sandbox_mode="workspace-write" --json - < fixes.md
 
-# read-only analysis
-codex exec --ignore-user-config ... -s read-only -C "$REPO" --output-schema schema.json -o last.json -
+# read-only analysis: web search off, local files only
+codex exec -m gpt-6-astra ... -c web_search="disabled" -s read-only -C "$REPO" \
+  --output-schema schema.json -o last.json -
 ```
 
 JSONL events (`--json`): `thread.started {thread_id}`, `turn.started`, `item.started` and
@@ -61,18 +74,27 @@ Usage arrives only at the end of a turn; for live tokens tail the rollout file (
 Commands run as `/bin/zsh -lc "<cmd>"` (the user's shell).
 
 Measured: a real 6-file change (generalising a hook script, 16 commands) used 190,369 input
-tokens (156,288 cached), 5,927 output, at effort medium.
+tokens (156,288 cached), 5,927 output, at effort medium on `gpt-6.1-sol` with
+`--ignore-user-config`. A two-line read brief on baton's current profile (2026-10-29: `gpt-6-astra`,
+`xhigh`, user config) used 56,319 input tokens (37,248 cached), 469 output (181 reasoning), 29 s.
 
-## Prompt size levers (see `codex-prompt-anatomy.md`)
+## Prompt size (measured; baton keeps the full prompt since 2026-10-29)
 
-- `--ignore-user-config`: drops the user's plugins' skills list (44 KB with 37 plugins) and hooks.
-  One-line call: uncached input 14,292 → 2,459 tokens.
-- `model_instructions_file` replaces the 22 KB base instructions; they are in the cached prefix,
-  so the saving is in cache reads, and the default text carries tool and testing rules.
+See `codex-prompt-anatomy.md`. These are facts about the knobs, not settings baton uses.
+- `--ignore-user-config` drops the user's plugins' skills list (44 KB with 37 plugins) and hooks:
+  a one-line call's uncached input fell from 14,292 to 2,459 tokens. baton stopped passing it so
+  workers see the user's plugins.
+- Skills budget: with the user's ~280 skills, Codex lists 139 of them without descriptions (22 KB)
+  and emits `Exceeded skills context budget. All skill descriptions were removed and 139
+  additional skills were not included`; `-c skills.max_context_tokens=100000` lists all 272 with
+  short descriptions (40 KB). Measured with `codex debug prompt-input` (free, no model call).
+- `model_instructions_file` replaces the 22 KB base instructions (cached prefix; the default text
+  carries tool and testing rules).
 - `features.apps=false` trims 1 KB; `features.multi_agent=false` did not change the tool payload.
-- `skills.max_context_tokens`, `plugins.<id>.enabled`, `mcp_servers.<id>.enabled`,
-  `mcp_servers.<id>.enabled_tools`, `project_doc_max_bytes` for interactive profiles.
-- Output side: `model_reasoning_summary="none"`, `model_verbosity="low"`, lower effort.
+- `plugins.<id>.enabled`, `mcp_servers.<id>.enabled`, `mcp_servers.<id>.enabled_tools`,
+  `project_doc_max_bytes` select what a profile loads.
+- Output side: `model_reasoning_summary="none"` (baton never reads summaries) and
+  `model_verbosity="low"` (the result is a schema-bound JSON object).
 
 ## Quota without spending tokens
 
@@ -119,7 +141,11 @@ output path; the default (auto) size came out 1254 × 1254. Images are saved int
 
 ## Pitfalls
 
-- `--ignore-user-config` also drops the user's guard hooks; keep risky work away from workers.
+- Plugin hooks run in workers only once the user trusted them in `/hooks` (the trading `desk`
+  guard is not trusted); keep risky work away from workers.
+- With the user's config every run today logs, without failing: an `error` item for a plugin
+  `hooks.json` with a Claude `modules` field (`context-compress` 0.1.3, skipped), the skills
+  budget item above, and `AuthRequired` from the ibkr MCP server (not logged in) on stderr.
 - `--ephemeral` removes the rollout file, and with it live token and quota events.
 - In `exec`, the sandbox blocks writes outside `-C` and `--add-dir` (Python's default bytecode cache
   location included: set `PYTHONPYCACHEPREFIX` inside the worktree).

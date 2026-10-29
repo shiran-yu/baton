@@ -241,15 +241,76 @@ fn newest_rollout_last_rate_limits_and_failure_isolation() {
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(1)))
         .unwrap();
-    fs::write(dir.join("rollout-new.jsonl"), concat!(
-        "{\"payload\":{\"rate_limits\":{\"primary\":{\"used_percent\":1,\"window_minutes\":300,\"resets_at\":1792432873}}}}\n",
-        "{\"payload\":{\"rate_limits\":{\"plan_type\":\"plus\",\"primary\":{\"used_percent\":14,\"window_minutes\":300,\"resets_at\":1792432873},\"secondary\":{\"used_percent\":3,\"window_minutes\":10080,\"resets_at\":1792957281}}}}\n",
-        "{\"payload\":{\"type\":\"other\"}}\n")).unwrap();
+    // A premium bucket with null windows follows the last codex line; a newer rollout has only that.
+    let premium = "{\"payload\":{\"rate_limits\":{\"limit_id\":\"premium\",\"primary\":null,\"secondary\":null,\"plan_type\":\"plus\"}}}\n";
+    let new = dir.join("rollout-new.jsonl");
+    let (soon, later) = (now() + 3600, now() + 86400);
+    fs::write(&new, format!(
+        "{{\"payload\":{{\"rate_limits\":{{\"primary\":{{\"used_percent\":1,\"window_minutes\":300,\"resets_at\":{soon}}}}}}}}}\n\
+         {{\"payload\":{{\"rate_limits\":{{\"limit_id\":\"codex\",\"plan_type\":\"plus\",\"primary\":{{\"used_percent\":14,\"window_minutes\":300,\"resets_at\":{soon}}},\"secondary\":{{\"used_percent\":3,\"window_minutes\":10080,\"resets_at\":{later}}}}}}}}}\n\
+         {{\"payload\":{{\"type\":\"other\"}}}}\n{premium}")).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&new)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(2)))
+        .unwrap();
+    fs::write(dir.join("rollout-newest.jsonl"), premium).unwrap();
     let v = f.usage(true);
     assert_eq!(source(&v, "codex")["stale"], true);
     assert_eq!(source(&v, "codex")["windows"][0]["used"], 0.14);
     assert!(source(&v, "agy")["error"].is_string());
     assert_eq!(source(&v, "claude")["windows"][0]["used"], 0.36);
+    // With no codex bucket anywhere, both the live and the rollout error are kept.
+    fs::remove_file(&new).unwrap();
+    let error = source(&f.usage(true), "codex")["error"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(error.starts_with("live read: "), "{error}");
+    assert!(error.ends_with("; rollouts: no codex rate limits in recent rollouts"));
+}
+
+#[test]
+fn old_rollout_windows_past_their_reset_are_unused() {
+    let f = Fixture::new();
+    f.script("codex", "exit 1");
+    let dir = f.dir.join("codex-home/sessions/2026/10/01");
+    fs::create_dir_all(&dir).unwrap();
+    let line = |primary: u64, secondary: u64| {
+        json!({"payload":{"rate_limits":{"limit_id":"codex","rate_limit_reached_type":"primary",
+            "primary":{"used_percent":100,"window_minutes":300,"resets_at":primary},
+            "secondary":{"used_percent":40,"window_minutes":10080,"resets_at":secondary}}}})
+        .to_string()
+    };
+    let path = dir.join("rollout-old.jsonl");
+    // Only the 5h window has reset: it reads 0, the weekly one keeps its use and the limit type.
+    fs::write(&path, line(now() - 60, now() + 86400)).unwrap();
+    let codex = source(&f.usage(true), "codex").clone();
+    assert_eq!(codex["windows"][0]["used"], 0.0);
+    assert_eq!(codex["windows"][0]["pace"], 0.0);
+    assert_eq!(codex["windows"][1]["used"], 0.4);
+    assert_eq!(codex["rate_limit_reached_type"], "primary");
+    // Every window has reset: the old limit type is dropped.
+    fs::write(&path, line(now() - 60, now() - 30)).unwrap();
+    let codex = source(&f.usage(true), "codex").clone();
+    assert_eq!(codex["windows"][1]["used"], 0.0);
+    assert!(codex["rate_limit_reached_type"].is_null());
+}
+
+#[test]
+fn live_codex_prefers_the_codex_bucket_by_limit_id() {
+    let f = Fixture::new();
+    let mut v: Value =
+        serde_json::from_str(include_str!("fixtures/usage/codex-ratelimits.json")).unwrap();
+    v["result"]["rateLimits"] =
+        json!({"limitId":"premium","planType":"plus","primary":null,"secondary":null});
+    fs::write(f.dir.join("codex.json"), v.to_string()).unwrap();
+    let cx = source(&f.usage(true), "codex").clone();
+    assert!(cx["error"].is_null(), "{cx}");
+    assert_eq!(cx["plan_type"], "plus");
+    assert_eq!(cx["windows"][0]["used"], 0.07);
+    assert!(cx["stale"].is_null());
 }
 
 #[test]
@@ -309,6 +370,36 @@ fn statusline_cache_only_and_malformed_cache() {
     );
     fs::write(f.dir.join("state/usage.json"), "malformed").unwrap();
     assert!(f.call(&["statusline", "line"]).stdout.is_empty());
+}
+
+#[test]
+fn statusline_hint_names_the_first_eligible_worker() {
+    let f = Fixture::new();
+    let mut snapshot = f.usage(true);
+    let hint = |snapshot: &Value| {
+        fs::write(f.dir.join("state/usage.json"), snapshot.to_string()).unwrap();
+        let out = String::from_utf8(f.call(&["statusline", "hint"]).stdout).unwrap();
+        out.rsplit_once(": ").unwrap().1.trim_end().to_string()
+    };
+    assert_eq!(hint(&snapshot), "baton:codex first");
+    for agent in snapshot["agents"].as_array_mut().unwrap() {
+        match agent["agent"].as_str().unwrap() {
+            // 5h window 99% used: 25k tokens left, below 1.5 × the 120k D2 cost.
+            "codex" => agent["windows"][0]["used"] = json!(0.99),
+            "agy" => agent["error"] = json!("quota reached"),
+            _ => {}
+        }
+    }
+    assert_eq!(hint(&snapshot), "baton:copilot first (read-only)");
+    for agent in snapshot["agents"].as_array_mut().unwrap() {
+        if agent["agent"] == "copilot" {
+            agent["remaining"] = json!(20);
+        }
+    }
+    assert_eq!(
+        hint(&snapshot),
+        "workers exhausted; keep the work with the lead"
+    );
 }
 
 #[test]

@@ -4,8 +4,12 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc,
+    time::{Duration, Instant},
 };
 
 pub struct Options {
@@ -16,9 +20,14 @@ pub struct Options {
 }
 impl Default for Options {
     fn default() -> Self {
+        let mut hosts = vec!["codex".into(), "agy".into()];
+        // Copilot is a default host only where its CLI is installed.
+        if crate::setup::installed("copilot") {
+            hosts.push("copilot".into());
+        }
         Self {
             dry_run: false,
-            hosts: vec!["codex".into(), "agy".into()],
+            hosts,
             only: Vec::new(),
             include_trading: false,
         }
@@ -88,6 +97,7 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
         }
     };
     let mut codex = Codex::default();
+    let mut copilot = Copilot::default();
     if options.hosts.iter().any(|host| host == "codex") {
         for (name, marketplace) in &marketplaces {
             if config.own_marketplaces.contains(name)
@@ -115,6 +125,8 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
                 Some("excluded")
             } else if host == "agy" && market == "trading-plugins" && !options.include_trading {
                 Some("trading guards not proven for agy; use --include-trading")
+            } else if host == "copilot" && market == "trading-plugins" && !options.include_trading {
+                Some("trading guards not proven for copilot; use --include-trading")
             } else {
                 None
             };
@@ -123,6 +135,8 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
             } else if let Some(entry) = entries.first() {
                 if host == "codex" {
                     codex.sync(name, market, &marketplaces, options.dry_run)
+                } else if host == "copilot" {
+                    copilot.sync(name, market, &marketplaces, options.dry_run)
                 } else {
                     agy(home, name, entry, options.dry_run)
                 }
@@ -148,22 +162,89 @@ fn binary(host: &str) -> std::ffi::OsString {
     std::env::var_os(format!("BATON_{}", host.to_uppercase())).unwrap_or_else(|| host.into())
 }
 fn invoke(host: &str, args: &[&str]) -> Res<String> {
-    let output = Command::new(binary(host))
+    let mut command = Command::new(binary(host));
+    command
         .args(args)
         .stdin(Stdio::null())
-        .output()?;
-    if !output.status.success() {
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    // A first-run update prompt must not stall the sync.
+    if host == "copilot" {
+        command.env("COPILOT_AUTO_UPDATE", "false");
+    }
+    let mut child = command.spawn()?;
+    let (tx, rx) = mpsc::channel();
+    for (index, stream) in [
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut text = Vec::new();
+            if let Some(mut stream) = stream {
+                let _ = stream.read_to_end(&mut text);
+            }
+            let _ = tx.send((index, text));
+        });
+    }
+    // BATON_SYNC_TIMEOUT (seconds) exists for tests.
+    let timeout = std::env::var("BATON_SYNC_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
+    let deadline = Instant::now() + Duration::from_secs(timeout);
+    let timed_out = |child: &mut std::process::Child| {
+        // Kill the whole group, so a child holding the pipes cannot outlive the sync.
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .stderr(Stdio::null())
+            .status();
+        let _ = child.kill();
+        let _ = child.wait();
+        Error::new(
+            5,
+            format!("{host} {}: timed out after {timeout}s", args.join(" ")),
+        )
+    };
+    let mut output = [Vec::new(), Vec::new()];
+    for _ in 0..2 {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok((index, text)) => output[index] = text,
+            Err(_) => return Err(timed_out(&mut child)),
+        }
+    }
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            return Err(timed_out(&mut child));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let [stdout, stderr] = output;
+    if !status.success() {
         return Err(Error::new(
             1,
             format!(
                 "{host} {}: {}{}",
                 args.join(" "),
-                String::from_utf8_lossy(&output.stdout).trim(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&stdout).trim(),
+                String::from_utf8_lossy(&stderr).trim()
             ),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 fn planned(host: &str, args: &[&str]) {
     println!(
@@ -312,6 +393,95 @@ fn installed(value: &Value, name: &str, market: &str) -> bool {
     }
 }
 
+// Copilot CLI reads Claude's .claude-plugin/marketplace.json natively, so no conversion is needed.
+#[derive(Default)]
+struct Copilot {
+    marketplaces: Option<String>,
+    plugins: Option<String>,
+    registered: BTreeSet<String>,
+    added: BTreeSet<String>,
+}
+impl Copilot {
+    fn sync(
+        &mut self,
+        name: &str,
+        market: &str,
+        markets: &BTreeMap<String, Marketplace>,
+        dry: bool,
+    ) -> Res<String> {
+        let Some(market) = markets.get(market) else {
+            return Ok("skipped (no marketplace checkout)".into());
+        };
+        let catalog_path = market.location.join(".claude-plugin/marketplace.json");
+        if !catalog_path.is_file() {
+            return Ok("skipped (no marketplace manifest)".into());
+        }
+        let catalog: Value = paths::read_json(&catalog_path)?;
+        // Copilot registers a marketplace under the name in its manifest.
+        let market_name = catalog["name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::new(1, "marketplace manifest has no name"))?;
+        if !catalog["plugins"]
+            .as_array()
+            .is_some_and(|plugins| plugins.iter().any(|p| p["name"] == name))
+        {
+            return Ok("skipped (not in marketplace manifest)".into());
+        }
+        if self.marketplaces.is_none() {
+            self.marketplaces = Some(invoke("copilot", &["plugin", "marketplace", "list"])?);
+        }
+        let location = market.location.to_string_lossy();
+        if !self.registered.contains(market_name) {
+            if !marketplace_present(
+                self.marketplaces.as_deref().unwrap_or(""),
+                market_name,
+                &location,
+            ) {
+                let args = ["plugin", "marketplace", "add", &location];
+                if dry {
+                    planned("copilot", &args);
+                } else {
+                    invoke("copilot", &args)?;
+                }
+            }
+            self.registered.insert(market_name.into());
+        }
+        if self.plugins.is_none() {
+            // Older CLIs have no --json; fall back to the plain list.
+            self.plugins = Some(
+                invoke("copilot", &["plugin", "list", "--json"])
+                    .or_else(|_| invoke("copilot", &["plugin", "list"]))?,
+            );
+        }
+        let id = format!("{name}@{market_name}");
+        let list = self.plugins.as_deref().unwrap_or("");
+        let present = match serde_json::from_str::<Value>(list) {
+            Ok(value) => installed(&value, name, market_name),
+            Err(_) => list.lines().any(|line| {
+                line.split(|c: char| c.is_whitespace() || "()[]\"'│,".contains(c))
+                    .any(|part| part == id || part == name)
+            }),
+        };
+        if self.added.contains(&id) || present {
+            return Ok("up to date".into());
+        }
+        let args = ["plugin", "install", &id];
+        if dry {
+            planned("copilot", &args);
+        } else {
+            invoke("copilot", &args)?;
+        }
+        self.added.insert(id);
+        Ok(if dry {
+            "skipped (dry-run; would install)"
+        } else {
+            "installed"
+        }
+        .into())
+    }
+}
+
 fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> {
     if name.is_empty()
         || !name
@@ -332,6 +502,13 @@ fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> 
             return Ok("up to date".into());
         }
     }
+    let dir = dest.to_string_lossy();
+    // Dry run: only report the plan; no files are generated and agy is never invoked.
+    if dry {
+        planned("agy", &["plugin", "validate", "--json", &dir]);
+        planned("agy", &["plugin", "install", &dir]);
+        return Ok("skipped (dry-run; would install)".into());
+    }
     if dest.symlink_metadata().is_ok() {
         // Never follow a destination symlink when materializing generated files.
         if dest.symlink_metadata()?.file_type().is_symlink() {
@@ -342,10 +519,6 @@ fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> 
     }
     fs::create_dir_all(&dest)?;
     build_agy(name, &entry.version, &source, &dest)?;
-    let dir = dest.to_string_lossy();
-    if dry {
-        planned("agy", &["plugin", "validate", "--json", &dir]);
-    }
     let validation = invoke("agy", &["plugin", "validate", "--json", &dir])?;
     if let Ok(value) = serde_json::from_str::<Value>(&validation) {
         if value["valid"] == false
@@ -358,21 +531,12 @@ fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> 
             eprintln!("{name} agy validation: {validation}");
         }
     }
-    if dry {
-        planned("agy", &["plugin", "install", &dir]);
-    } else {
-        invoke("agy", &["plugin", "install", &dir])?;
-    }
+    invoke("agy", &["plugin", "install", &dir])?;
     paths::write_json(
         &marker,
-        &json!({"version":entry.version, "source":source, "installed":!dry}),
+        &json!({"version":entry.version, "source":source, "installed":true}),
     )?;
-    Ok(if dry {
-        "skipped (dry-run; would install)"
-    } else {
-        "installed"
-    }
-    .into())
+    Ok("installed".into())
 }
 
 fn copy_tree(source: &Path, dest: &Path) -> Res<()> {

@@ -33,7 +33,7 @@ Set up this machine from Claude Code. Use the real binary, not a missing-binary 
 3. Ask the user **once** for the pending consent steps, listing their descriptions and exact
    commands. For `agy-permissions`, explain that only `read_file(<root>/)` and
    `write_file(<root>/)` are added to `~/.gemini/antigravity-cli/settings.json`, where `<root>`
-   is the resolved `$BATON_AGY_WT_DIR`, or `${TMPDIR:-/tmp}/baton-wt`. The edit preserves other
+   is the resolved `$BATON_AGY_WT_DIR`, or `/tmp/baton-wt` (TMPDIR is not used). The edit preserves other
    keys and their order and saves `settings.json.baton-bak`. Respect declined steps.
 
 4. Run `baton setup --apply <approved-ids-comma-separated> --yes` for the approved steps,

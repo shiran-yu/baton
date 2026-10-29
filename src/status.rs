@@ -100,7 +100,11 @@ impl Progress {
 impl Status {
     pub fn line(&self) -> String {
         let secs = paths::now().saturating_sub(self.started);
-        let mut parts = vec![self.agent.clone(), self.effort.clone()];
+        let mut parts = vec![self.agent.clone()];
+        // agy's Claude models take no effort.
+        if !self.effort.is_empty() {
+            parts.push(self.effort.clone());
+        }
         for (count, label) in [(self.files, "files"), (self.commands, "cmds")] {
             if count > 0 {
                 parts.push(format!("{count} {label}"));

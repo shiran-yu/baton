@@ -1,8 +1,10 @@
 use crate::{
+    brief,
     codex::{self, Outcome, WorkerProcess},
-    git, paths,
+    git, paths, process,
     result::{Meta, Tokens, Worker as Report},
     status::Progress,
+    usage,
     worker::{self, Worker},
     Error, Res,
 };
@@ -34,13 +36,279 @@ pub struct Agy {
     counted: BTreeSet<(String, u64)>,
     usage: BTreeSet<(String, u64)>,
     tokens: Tokens,
+    preamble: Option<String>,
 }
 
-fn agent(meta: &Meta) -> Res<()> {
-    if meta.base_commit.is_empty() {
-        return Err(Error::usage(
-            "agy requires a git repository for agent setup",
-        ));
+// Strongest first. The Claude 4.6 models draw on the 3p-weekly bucket and leave agy on
+// 2026-11-02; Gemini 3.8 Flash stays.
+pub const MODELS: [&str; 3] = ["claude-opus-4-6-thinking", "claude-sonnet-4-6", GEMINI];
+pub const GEMINI: &str = "gemini-3.8-flash";
+const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// The model and effort of a run, checked against `agy models` (free, about 3 s).
+pub fn choose(model: &str, effort: Option<String>) -> (String, Option<String>) {
+    let listed: Vec<String> = process::capture(
+        Command::new(process::executable("agy")).arg("models"),
+        Duration::from_secs(30),
+    )
+    .map(|out| {
+        out.lines()
+            .filter_map(|line| line.split('\t').next())
+            .map(String::from)
+            .collect()
+    })
+    .unwrap_or_default();
+    pick(model, effort, &listed)
+}
+
+// A model from MODELS falls back to the next one agy lists; any other model is kept. The effort
+// is the given one, else the highest listed as `<model>-<effort>`; a model listed only bare takes
+// none (agy refuses --effort for it). An empty list changes nothing.
+fn pick(model: &str, effort: Option<String>, listed: &[String]) -> (String, Option<String>) {
+    let bare = |m: &str| listed.iter().any(|s| s == m);
+    let model = MODELS
+        .iter()
+        .position(|m| *m == model)
+        .and_then(|i| {
+            MODELS[i..]
+                .iter()
+                .find(|m| bare(m) || !efforts(listed, m).is_empty())
+        })
+        .copied()
+        .unwrap_or(model);
+    let levels = efforts(listed, model);
+    let effort = if levels.is_empty() && bare(model) {
+        None
+    } else {
+        effort.or_else(|| {
+            EFFORTS
+                .iter()
+                .rev()
+                .find(|e| levels.contains(e))
+                .map(|e| e.to_string())
+        })
+    };
+    (model.into(), effort)
+}
+
+fn efforts<'a>(listed: &'a [String], model: &str) -> Vec<&'a str> {
+    listed
+        .iter()
+        .filter_map(|s| s.strip_prefix(model)?.strip_prefix('-'))
+        .filter(|e| EFFORTS.contains(e))
+        .collect()
+}
+
+const LISTED: usize = 200;
+// Directory entries the ## Files walk may visit outside git.
+#[cfg(not(test))]
+const WALK: usize = 50_000;
+#[cfg(test)]
+const WALK: usize = 300;
+
+// agy is never told its workspace otherwise and resolves relative brief paths by searching from /.
+fn preamble(meta: &Meta, files: &[String]) -> String {
+    let root = Path::new(&meta.worktree);
+    let mut text = format!(
+        "Workspace root: {root}\nEvery path in this brief is relative to {root}. Never list, search or read anything outside it.\n",
+        root = meta.worktree
+    );
+    // Read agents have no listing or file search tools, so name the files explicitly.
+    if meta.mode == "read" {
+        let (paths, more) = listed(root, files);
+        if !paths.is_empty() {
+            text.push_str("Files in scope:\n");
+            for path in paths {
+                text.push_str(&format!("- {}\n", root.join(path).display()));
+            }
+        }
+        if more {
+            text.push_str(&format!(
+                "This file list is incomplete (at most {LISTED} paths); use grep_search inside the root for the rest.\n"
+            ));
+        }
+    }
+    text.push('\n');
+    text
+}
+
+// Expand the brief's ## Files globs to root-relative paths: git's file list, else a bounded walk.
+fn listed(root: &Path, files: &[String]) -> (Vec<String>, bool) {
+    let patterns: Vec<String> = files
+        .iter()
+        .filter_map(|line| {
+            // A Files line may carry a note after the path.
+            let pattern = line.split(|c: char| c == '`' || c.is_whitespace()).next()?;
+            let pattern = match Path::new(pattern).strip_prefix(root) {
+                Ok(relative) => relative.to_string_lossy().into_owned(),
+                Err(_) if pattern.starts_with('/') => return None,
+                Err(_) => pattern.into(),
+            };
+            let pattern = pattern.trim_start_matches("./").trim_end_matches('/');
+            (!pattern.is_empty()).then(|| pattern.to_string())
+        })
+        .collect();
+    if patterns.is_empty() {
+        return (Vec::new(), false);
+    }
+    let (candidates, mut more): (Vec<String>, bool) =
+        match git::run(root, &["ls-files", "-co", "--exclude-standard", "-z"]) {
+            Ok(out) => (
+                out.split('\0')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect(),
+                false,
+            ),
+            Err(_) => {
+                // Start at each pattern's leading literal directory, not at the root.
+                let mut starts: Vec<String> = patterns
+                    .iter()
+                    .map(|p| {
+                        p.split('/')
+                            .take_while(|part| !part.contains(['*', '?']))
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    })
+                    .collect();
+                starts.sort();
+                starts.dedup();
+                let mut kept: Vec<String> = Vec::new();
+                for start in starts {
+                    if !kept
+                        .iter()
+                        .any(|k| k.is_empty() || start.starts_with(&format!("{k}/")))
+                    {
+                        kept.push(start);
+                    }
+                }
+                let (mut found, mut budget, mut complete) = (Vec::new(), WALK, true);
+                let base = fs::canonicalize(root).unwrap_or_else(|_| root.into());
+                for start in kept {
+                    // A start through a symlink or .. would leave the root.
+                    if fs::canonicalize(root.join(&start)).ok() != Some(base.join(&start)) {
+                        continue;
+                    }
+                    match fs::metadata(root.join(&start)) {
+                        Ok(kind) if kind.is_dir() => {
+                            let prefix = if start.is_empty() {
+                                start
+                            } else {
+                                format!("{start}/")
+                            };
+                            complete &= walk(
+                                &root.join(&prefix),
+                                &prefix,
+                                &patterns,
+                                &mut found,
+                                &mut budget,
+                            );
+                        }
+                        Ok(_) => found.push(start),
+                        Err(_) => {}
+                    }
+                }
+                (found, !complete)
+            }
+        };
+    let mut matched = candidates.into_iter().filter(|path| {
+        patterns
+            .iter()
+            .any(|p| brief::glob(p, path) || brief::glob(&format!("{p}/**"), path))
+    });
+    let paths = matched.by_ref().take(LISTED).collect();
+    more |= matched.next().is_some();
+    (paths, more)
+}
+
+// Whether a file under dir can match pattern; a matched directory covers everything under it.
+fn reaches(pattern: &str, dir: &str) -> bool {
+    let mut parts = pattern.split('/');
+    for name in dir.split('/') {
+        match parts.next() {
+            None => return true,
+            Some(part) if part.contains("**") => return true,
+            Some(part) if !brief::glob(part, name) => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+// Returns false when the entry budget ran out.
+fn walk(
+    dir: &Path,
+    prefix: &str,
+    patterns: &[String],
+    found: &mut Vec<String>,
+    budget: &mut usize,
+) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return true;
+    };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = format!("{prefix}{name}");
+        // file_type does not follow symlinks, so the walk never leaves the root.
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            if ![".git", "target", "node_modules"].contains(&name.as_str())
+                && patterns.iter().any(|p| reaches(p, &path))
+                && !walk(&entry.path(), &format!("{path}/"), patterns, found, budget)
+            {
+                return false;
+            }
+        } else {
+            found.push(path);
+        }
+    }
+    true
+}
+
+// Returns the agent name for --agent.
+fn agent(meta: &Meta) -> Res<&'static str> {
+    let mut tools = vec!["view_file"];
+    if meta.mode == "edit" {
+        tools.extend([
+            "list_dir",
+            "find_by_name",
+            "grep_search",
+            "write_to_file",
+            "replace_file_content",
+            "multi_replace_file_content",
+        ]);
+    } else {
+        tools.push("grep_search");
+    }
+    tools.push("finish");
+    let tools = tools
+        .iter()
+        .map(|tool| format!("  - {tool}\n"))
+        .collect::<String>();
+    if meta.mode == "read" {
+        // Read runs write nothing into the user's folder or repo; agy also loads its global agents dir.
+        let home = usage::user_home();
+        if home.as_os_str().is_empty() {
+            return Err(Error::usage("HOME must be set for agy read mode"));
+        }
+        let dir = home.join(".gemini/config/agents");
+        let path = dir.join("baton-read-worker.md");
+        // The user's skills, rules, plugins and hooks load, and agy's default prompt sections list
+        // the skills; agy still declares only these tools plus its manage_task (measured 2026-10-29).
+        let content = format!("---\nname: baton-read-worker\ndescription: Read-only baton worker\nexcludeDefaultComponents: false\ninheritCustomizations: true\nsubagent: false\ntools:\n{tools}---\nRead only inside the workspace root named in the first message. Never run commands. Call finish with the result object.\n");
+        if fs::read_to_string(&path).ok().as_deref() != Some(content.as_str()) {
+            fs::create_dir_all(&dir)?;
+            // Rename so a concurrent agy never reads a half-written agent.
+            let temp = dir.join(format!(".baton-read-worker.{}.tmp", std::process::id()));
+            fs::write(&temp, &content)?;
+            fs::rename(&temp, &path)?;
+        }
+        return Ok("baton-read-worker");
     }
     let cwd = Path::new(&meta.worktree);
     let relative = ".agents/agents/baton-worker.md";
@@ -57,27 +325,14 @@ fn agent(meta: &Meta) -> Res<()> {
             "\n{pattern}"
         )?;
     }
-    let mut tools = vec!["view_file", "list_dir", "find_by_name", "grep_search"];
-    if meta.mode == "edit" {
-        tools.extend([
-            "write_to_file",
-            "replace_file_content",
-            "multi_replace_file_content",
-        ]);
-    }
-    tools.push("finish");
-    let tools = tools
-        .iter()
-        .map(|tool| format!("  - {tool}\n"))
-        .collect::<String>();
     fs::create_dir_all(cwd.join(".agents/agents"))?;
-    fs::write(cwd.join(relative), format!("---\nname: baton-worker\ndescription: Bounded baton worker\nexcludeDefaultComponents: true\ninheritCustomizations: false\nsubagent: false\ntools:\n{tools}---\nStay inside the files listed in the brief. Never run commands; baton runs the acceptance commands. Call finish with the result object.\n"))?;
-    Ok(())
+    fs::write(cwd.join(relative), format!("---\nname: baton-worker\ndescription: Bounded baton worker\nexcludeDefaultComponents: false\ninheritCustomizations: true\nsubagent: false\ntools:\n{tools}---\nStay inside the files listed in the brief. Never run commands; baton runs the acceptance commands. Call finish with the result object.\n"))?;
+    Ok("baton-worker")
 }
 
 impl Agy {
-    pub fn new(dir: &Path, meta: &Meta) -> Res<Self> {
-        agent(meta)?;
+    pub fn new(dir: &Path, meta: &Meta, files: &[String]) -> Res<Self> {
+        let name = agent(meta)?;
         fs::write(dir.join("schema.json"), codex::SCHEMA)?;
         let binary = std::env::var_os("BATON_AGY").unwrap_or_else(|| "agy".into());
         let binary =
@@ -93,7 +348,7 @@ impl Agy {
             "--output-format",
             "stream-json",
             "--agent",
-            "baton-worker",
+            name,
             "--model",
             &meta.model,
         ]);
@@ -105,6 +360,10 @@ impl Agy {
             .arg(dir.join("schema.json"))
             .arg("--print-timeout")
             .arg(format!("{}s", meta.timeout));
+        // Reads under the root are then auto-allowed even when it is not a trusted workspace.
+        if meta.mode == "read" {
+            command.arg("--add-dir").arg(&meta.worktree);
+        }
         codex::scrub(&mut command, &meta.task);
         if let Some(value) = std::env::var_os("XDG_CONFIG_HOME") {
             command.env("XDG_CONFIG_HOME", value);
@@ -152,6 +411,7 @@ impl Agy {
             counted: BTreeSet::new(),
             usage: BTreeSet::new(),
             tokens: Tokens::default(),
+            preamble: Some(preamble(meta, files)),
         })
     }
 
@@ -336,6 +596,7 @@ impl Worker for Agy {
             .input
             .take()
             .ok_or_else(|| Error::new(1, "agy session closed"))?;
+        let input = format!("{}{input}", self.preamble.take().unwrap_or_default());
         let line = json!({"event":"user", "message":{"content":input}}).to_string();
         // A worker that stops reading must not block the supervisor's timeout loop.
         let (written, writing) = mpsc::channel();
@@ -477,4 +738,85 @@ fn exhausted(message: &str) -> (Outcome, Report) {
         },
         worker::failed(message),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn strongest_listed_model_and_its_highest_effort() {
+        let list = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        // `agy models` on 2026-10-29.
+        let today = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-sonnet-4-6 claude-opus-4-6-thinking gpt-oss-120b-medium");
+        let after = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low");
+        let opus = MODELS[0].to_string();
+        let gemini = (GEMINI.to_string(), Some("high".to_string()));
+        assert_eq!(pick(MODELS[0], None, &today), (opus.clone(), None));
+        // agy refuses --effort for a model listed bare.
+        assert_eq!(pick(MODELS[0], Some("low".into()), &today), (opus, None));
+        assert_eq!(pick(MODELS[0], None, &after), gemini);
+        assert_eq!(pick(GEMINI, None, &today), gemini);
+        assert_eq!(
+            pick(GEMINI, Some("low".into()), &after),
+            (GEMINI.into(), Some("low".into()))
+        );
+        // A model outside baton's list is kept; an empty list changes nothing.
+        assert_eq!(pick("custom", None, &today), ("custom".into(), None));
+        assert_eq!(pick(MODELS[0], None, &[]), (MODELS[0].into(), None));
+    }
+
+    #[test]
+    fn listed_files_are_capped_and_stay_under_the_root() {
+        let root = std::env::temp_dir().join(format!("baton-listed-{}", std::process::id()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::create_dir_all(root.join("node_modules/src")).unwrap();
+        for i in 0..205 {
+            fs::write(root.join(format!("src/{i:03}.rs")), "").unwrap();
+        }
+        fs::write(root.join("docs/a.md"), "").unwrap();
+        let (paths, more) = listed(&root, &["src/**".into()]);
+        assert_eq!((paths.len(), more), (LISTED, true));
+        assert_eq!(paths[0], "src/000.rs");
+        let absolute = format!("{}/docs/", root.display());
+        let (paths, more) = listed(
+            &root,
+            &[
+                "docs/a.md` the notes".into(),
+                absolute,
+                "/etc/passwd".into(),
+            ],
+        );
+        assert_eq!((paths, more), (vec!["docs/a.md".to_string()], false));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn walk_starts_at_the_literal_directory_and_flags_truncation() {
+        let root = std::env::temp_dir().join(format!("baton-walk-{}", std::process::id()));
+        // A decoy larger than the walk budget sorts before src/.
+        for dir in ["aaa", "src/a", "src/b/deep"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for i in 0..WALK + 10 {
+            fs::write(root.join(format!("aaa/{i:04}.txt")), "").unwrap();
+            fs::write(root.join(format!("src/b/deep/{i:04}.rs")), "").unwrap();
+        }
+        fs::write(root.join("src/a/mod.rs"), "").unwrap();
+        fs::write(root.join("src/lib.rs"), "").unwrap();
+        let (paths, more) = listed(&root, &["src/*.rs".into(), "src/*/mod.rs".into()]);
+        assert_eq!(
+            (paths, more),
+            (
+                vec!["src/a/mod.rs".to_string(), "src/lib.rs".to_string()],
+                false
+            )
+        );
+        // A root-level wildcard walks from the root and reports the exhausted budget.
+        let (paths, more) = listed(&root, &["**/*.rs".into()]);
+        assert!(paths.is_empty() && more);
+        let (_, more) = listed(&root, &["../**".into()]);
+        assert!(!more);
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

@@ -51,6 +51,9 @@ impl Usage {
         if source.is_null() {
             return Err("no cached usage".into());
         }
+        if source["error"] == crate::usage::COPILOT_ENDED {
+            return Err(crate::usage::COPILOT_ENDED.into());
+        }
         if has_error(source) {
             return Err("usage source errored or rate limited".into());
         }

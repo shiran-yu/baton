@@ -9,7 +9,7 @@ reads a few hundred tokens per delegated task, never a worker's transcript.
 1. The lead writes a brief (§3) and calls `baton route` (§8), or names the worker.
 2. The lead dispatches through a thin subagent (`baton:codex`, `baton:agy`, §7) so the run shows
    up as a row in Claude Code's agent panel, or runs `baton run` in a background Bash task.
-3. `baton run` starts the worker with its lean profile (§5) in a fresh git worktree, streams
+3. `baton run` starts the worker with its profile (§5) in a fresh git worktree, streams
    progress to a status file, and when the worker stops it verifies the claim itself: the diff
    is not empty for an edit task, every changed path is allowed by the brief, and the acceptance
    commands pass when baton reruns them.
@@ -43,10 +43,11 @@ baton route --brief FILE [--json]      recommended worker, model and effort, wit
 baton ledger [--since DAYS] / baton scorecard   per worker, per task type
 baton statusline subagent              Claude Code subagentStatusLine handler (stdin -> rows)
 baton statusline line                  one compact usage line for a main status line
+baton statusline hint                  that line plus the first worker eligible for a D2 task (prompt hook)
 baton doctor [--quick]                versions, auth-file presence, global agy hooks and usage;
                                        --quick checks executables and writable state only
 baton doctor --scan --out DIR         capture installed CLIs and subcommands through depth 3
-baton sync [--dry-run] [--to codex,agy]   mirror installed Claude Code plugins into Codex and agy
+baton sync [--dry-run] [--to codex,agy,copilot]   mirror installed Claude Code plugins into Codex, agy and Copilot
 baton hook-adapt --from <codex|agy> -- CMD...   run a Claude-format hook under another host
 baton setup                            fresh machine: install codex and agy, log in, write profiles,
                                        register marketplaces, sync, self-test
@@ -76,7 +77,7 @@ Every worker returns, and `baton run` prints, this object (schema in `plugins/ba
 
 ```json
 {
-  "task": "t-20261019-1432-ab12", "agent": "codex", "model": "gpt-6.1-sol", "effort": "medium",
+  "task": "t-20261019-1432-ab12", "agent": "codex", "model": "gpt-6-astra", "effort": "xhigh",
   "status": "done | partial | blocked | needs_decision | failed",
   "verified": true,
   "files_changed": ["src/x.rs"], "diffstat": "+120 -40 in 3 files",
@@ -92,46 +93,82 @@ Every worker returns, and `baton run` prints, this object (schema in `plugins/ba
 `verified` is baton's own check (§1.3), not the worker's claim. `status` from the worker is kept;
 a `done` with failed verification becomes exit code 3.
 
-## 5. Lean worker profiles
+## 5. Worker profiles
 
-Measured: the user's Codex config adds 37 plugins' skills (44 KB, ~11k tokens) to every call;
-skipping it took one call's uncached input from 14,292 to 2,459 tokens. Details in
-`plugins/baton/skills/baton-reference/codex-prompt-anatomy.md` and `plugins/baton/skills/baton-reference/agy.md`.
+Each worker runs its strongest model at its highest effort, with the user's own config, plugins
+and skills: reliability over cost (user, 2026-10-29: "模型都要用最好的…贵没关系, 主要是可靠").
+`--model` and `--effort` override; neither the task's difficulty nor routing (§8) lowers them.
+The token levers measured before that decision (`--ignore-user-config`, lean agy agents) stay
+documented, unused, in `plugins/baton/skills/baton-reference/codex-prompt-anatomy.md` and
+`plugins/baton/skills/baton-reference/agy.md`.
 
 **codex**
 ```
-codex exec --ignore-user-config -m gpt-6.1-sol -c model_reasoning_effort="<effort>"
-  -c model_reasoning_summary="none" -c model_verbosity="low" -c web_search="disabled"
-  -c features.apps=false -s workspace-write -C <worktree>
+codex exec -m gpt-6-astra -c model_reasoning_effort="xhigh"
+  -c model_reasoning_summary="none" -c model_verbosity="low" -c features.apps=false
+  [-c web_search="disabled"]                                   # read mode only: local files
+  -s read-only|workspace-write -C <worktree>
   --output-schema <schema> -o <task>/last.json --json -        # brief on stdin
 codex exec resume <thread_id> ... -                            # baton fix
 ```
+`gpt-6-astra` is the strongest model `codex debug models` lists ("Frontier intelligence for the
+most demanding work", 2026-10-29); the user's interactive `~/.codex/config.toml` already runs it at
+`xhigh`. The model also offers `max` and `ultra`, which baton does not use. Without
+`--ignore-user-config` the worker loads that config: enabled plugins and their skills, plugin MCP
+servers, and the plugin hooks the user trusted in Codex's `/hooks` (academic ones today; the
+trading `desk` guard is not trusted, so the risk lint of §3 still keeps trading briefs away).
+Sandbox and approval policy are baton's; web search is off in read mode and Codex's default in
+edit mode. Measured on a two-line read brief (2026-10-29): 56,319 input tokens (37,248 cached),
+469 output, 29 s. Non-fatal warnings on every run: the ibkr MCP server needs a login, a plugin
+`hooks.json` with a Claude `modules` field is skipped, and Codex's skills budget drops every
+description and 139 of the user's ~280 skills, as it does in the user's own sessions
+(`-c skills.max_context_tokens=100000` would list all of them).
 No `--ephemeral`: the rollout under `~/.codex/sessions/` carries live `token_count` events and
-`rate_limits`, which baton tails for progress and quota. `--ignore-user-config` also drops the
-user's hooks, so codex workers run without the trading guard: briefs that touch trading are
-refused by the risk lint (§3).
+`rate_limits`, which baton tails for progress and quota.
 
 **agy** (measured details in `plugins/baton/skills/baton-reference/agy.md`)
 
 - Managed agy worktrees live under `$BATON_AGY_WT_DIR`, default `/tmp/baton-wt` (canonicalised, so
   `/private/tmp/baton-wt` on macOS): agy resolves its workspace to a trusted ancestor such as `~`,
-  which would hide the worktree's lean agent; and outside a trusted workspace agy soft-denies even
+  which would hide the worktree's worker agent; and outside a trusted workspace agy soft-denies even
   reads, so `baton setup` adds `read_file(<root>/)` and `write_file(<root>/)` to agy's
   `permissions.allow`. Codex worktrees stay under `$BATON_HOME/wt/`.
-- Lean custom agent written into the worktree as `.agents/agents/baton-worker.md` (excluded from
-  git via `.git/info/exclude`): `excludeDefaultComponents: true`, `inheritCustomizations: false`,
-  `subagent: false`, and a YAML tool list. The default agent costs 11,906 input tokens for a
-  one-line prompt; a lean agent with no tools costs 572, and each tool adds about 550.
+- Model and effort, chosen at run time: the first of `claude-opus-4-6-thinking`,
+  `claude-sonnet-4-6` and `gemini-3.8-flash` that `agy models` lists (free, about 3 s), at the
+  highest effort it lists for that model as `<model>-<effort>` (`gemini-3.8-flash-high`). A model
+  listed bare gets no `--effort`: agy refuses one for the Claude models ("--effort is not
+  supported for model"). Opus draws on the `3p-weekly` bucket and leaves agy on 2026-11-02, after
+  which runs fall back to Gemini 3.8 Flash at `high`. A `--model` outside that list is used as
+  given; a failed listing changes nothing.
+- Worker agent: `excludeDefaultComponents: false`, `inheritCustomizations: true`,
+  `subagent: false`, and a YAML tool list. It inherits the user's skills, rules, plugins (24
+  synced by `baton sync --to agy`) and their hooks, and agy's default prompt sections list the
+  skills (with `excludeDefaultComponents: true` the skills load but go unlisted). agy still
+  declares only the listed tools plus its own `manage_task`, read from the stored prompt of real
+  read runs on 2026-10-29 (`init.tools` lists all 60 tools whatever the agent). A two-line read
+  brief on Opus took 13,082 input tokens (10,307 cached), 735 output, 20 s, and reading a skill
+  file under `~/.gemini/config/plugins/` was allowed. Edit tasks write `baton-worker` into the
+  worktree as `.agents/agents/baton-worker.md` (excluded from git via `.git/info/exclude`). Read
+  tasks, in git or not, write nothing into the user's folder: they use the global
+  `~/.gemini/config/agents/baton-read-worker.md`, which agy loads from any cwd.
 - Edit tasks get `[view_file, list_dir, find_by_name, grep_search, write_to_file,
-  replace_file_content, multi_replace_file_content, finish]`; read tasks drop the three write
-  tools. No `run_command`: headless agy soft-denies shell commands that are not allowlisted, and
-  baton reruns the acceptance commands itself, so the worker never needs a shell. `finish` is
-  required, or `--json-schema` returns no `structured_output`.
+  replace_file_content, multi_replace_file_content, finish]`; read tasks get only `[view_file,
+  grep_search, finish]`, so baton expands the brief's `## Files` into at most 200 absolute paths
+  (git's file list, else a walk from each pattern's literal leading folder that prunes folders no
+  pattern can reach, within 50,000 entries; a cut list says so). No `run_command`: headless agy
+  soft-denies shell commands that are not allowlisted, and baton reruns the acceptance commands
+  itself, so the worker never needs a shell. `finish` is required, or `--json-schema` returns no
+  `structured_output`.
+- Read runs pass `--add-dir <root>` and open the first message with the absolute root. Reads
+  outside it are refused twice: by the prompt, and by agy's headless soft-deny of file access
+  outside the workspace (measured 2026-10-29, agy 1.4.9: `view_file /etc/os-release` gave
+  `denied_actions: [read_file]` and ended the turn). A user `read_file(...)` allow rule or
+  `allowNonWorkspaceAccess: true` in agy's settings would lift the second guard.
 - One long-lived process per task, so fix rounds hit the prompt cache (agy caches only once the
   context passes ~17k tokens; `--conversation` resume reloads everything uncached):
   ```
   agy --input-format stream-json --output-format stream-json --agent baton-worker
-      --model gemini-3.8-flash --effort <low|medium|high> --mode accept-edits
+      --model <model> [--effort <effort>] --mode accept-edits
       --json-schema <schema> --print-timeout <secs>s  < (baton writes {"event":"user",...} lines)
   ```
   cwd = worktree, stdin always a pipe baton controls (with no credentials agy waits 60 s on a TTY).
@@ -147,7 +184,8 @@ refused by the risk lint (§3).
 - Quota: `agy -p /usage --output-format json` is free and returns `remaining_fraction` and reset
   time per bucket: `gemini-weekly` (Gemini Models) and `3p-weekly` (Claude and GPT models). The
   Claude 4.6 and GPT-OSS models leave agy on 2026-11-02; after that only `gemini-3.8-flash`
-  (low, medium, high) remains, and routing must stop offering the `3p` bucket.
+  (low, medium, high) remains, routing stops offering the `3p` bucket (`THIRD_PARTY_CUTOFF`), and
+  runs fall back through `agy models`.
 - Global hooks in `~/.gemini/config/hooks.json` (for example Orca's status hooks) run on every
   worker call and add process start-up time; `baton doctor` reports them.
 
@@ -168,7 +206,7 @@ Environment: workers get a scrubbed environment (no `*_API_KEY`, `*_TOKEN`, `*_S
 `$BATON_HOME/tasks/<id>/status.json`, rewritten at most twice a second:
 
 ```json
-{"task": "...", "agent": "codex", "model": "gpt-6.1-sol", "effort": "medium", "phase": "working",
+{"task": "...", "agent": "codex", "model": "gpt-6-astra", "effort": "xhigh", "phase": "working",
  "commands": 9, "last": "cargo test -q", "files": 3, "tests": "12/14",
  "tokens": {"input": 80211, "cached": 70100, "output": 2100},
  "quota": "5h 14% · wk 3%", "started": 1792416557, "updated": 1792416800}
@@ -192,7 +230,7 @@ Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lin
   panel row whose `agentType` is `baton:codex`, `baton:agy`, `codex` or `agy`, it finds the task
   id in `description` or `label` (`baton t-...`), otherwise matches an unclaimed task of that
   agent among the newest 20 status files, starting −5 s…+600 s from the row's `startTime`.
-  It prints `{"id": <row id>, "content": "codex · medium · 3 files ·
+  It prints `{"id": <row id>, "content": "codex · xhigh · 3 files ·
   tests 12/14 · 80k tok · 5h 14%"}`. Other rows are left untouched (no output for them).
 - Skill `baton`: the lead's playbook (brief template, when to delegate, routing, review loop).
 - Skill `baton-reference`: the command references of all three CLIs, read on demand.
@@ -216,6 +254,11 @@ Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lin
   than the window refills), per window (5 h and weekly), the worse of the two.
 - Hard rules: risky briefs go to the lead; D4 or no acceptance commands go to the lead; a worker
   whose remaining quota is below the task's expected cost is skipped.
+- Quota and task type pick the worker; model and effort are always that worker's best (§5),
+  whatever the difficulty (user, 2026-10-29). Codex: `gpt-6-astra` at `xhigh`. agy: Claude Opus
+  on the `3p-weekly` bucket until 2026-11-02, Gemini when that bucket is short or after the date,
+  with the effort found at run time; a weaker agy model is skipped while a stronger one is
+  eligible. Copilot keeps its own difficulty ladder.
 
 ## 9. Ledger
 

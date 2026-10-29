@@ -1,5 +1,12 @@
 #!/bin/sh
 set -eu
+# like `agy models` on 2026-10-29; FAKE_AGY_MODELS overrides the list
+if [ "${1-}" = models ]; then
+    for model in ${FAKE_AGY_MODELS-gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-sonnet-4-6 claude-opus-4-6-thinking gpt-oss-120b-medium}; do
+        printf '%s\t%s\n' "$model" "$model"
+    done
+    exit 0
+fi
 schema=
 previous=
 for arg in "$@"; do

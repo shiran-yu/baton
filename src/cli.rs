@@ -55,7 +55,8 @@ pub struct Run {
     pub auto_fix: u32,
     pub brief: PathBuf,
     pub mode: String,
-    pub effort: String,
+    // None: the highest effort agy lists for the model, found at run time.
+    pub effort: Option<String>,
     pub model: String,
     pub task: Option<String>,
     pub base: String,
@@ -136,9 +137,11 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                         if options
                             .hosts
                             .iter()
-                            .any(|host| !["codex", "agy"].contains(&host.as_str()))
+                            .any(|host| !["codex", "agy", "copilot"].contains(&host.as_str()))
                         {
-                            return Err(Error::usage("--to must be codex, agy or codex,agy"));
+                            return Err(Error::usage(
+                                "--to must list codex, agy or copilot, comma-separated",
+                            ));
                         }
                         options.hosts.dedup();
                     }
@@ -186,8 +189,8 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
         }
         "statusline" => {
             let mode = value(&mut args, "statusline")?;
-            if !["line", "subagent"].contains(&mode.as_str()) || args.next().is_some() {
-                return Err(Error::usage("usage: baton statusline <line|subagent>"));
+            if !["line", "hint", "subagent"].contains(&mode.as_str()) || args.next().is_some() {
+                return Err(Error::usage("usage: baton statusline <line|hint|subagent>"));
             }
             Ok(Cli::Statusline(mode))
         }
@@ -217,20 +220,23 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             if !["codex", "agy", "copilot", "auto"].contains(&agent.as_str()) {
                 return Err(Error::usage("worker must be codex, agy, copilot or auto"));
             }
+            // Each worker's strongest model and highest effort (user 2026-10-29: reliability over cost).
+            let (model, effort) = match agent.as_str() {
+                "copilot" => (crate::copilot::model(), Some("medium".into())),
+                "agy" => (crate::agy::MODELS[0].into(), None),
+                _ => (
+                    crate::codex::MODEL.into(),
+                    Some(crate::codex::EFFORT.into()),
+                ),
+            };
             let mut run = Run {
-                model: if agent == "copilot" {
-                    crate::copilot::model()
-                } else if agent == "agy" {
-                    "gemini-3.8-flash".into()
-                } else {
-                    "gpt-6.1-sol".into()
-                },
+                model,
                 agent,
                 detach: false,
                 auto_fix: 1,
                 brief: PathBuf::new(),
                 mode: "edit".into(),
-                effort: "medium".into(),
+                effort,
                 task: None,
                 base: "HEAD".into(),
                 timeout: 1800,
@@ -247,7 +253,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                         run.difficulty = Some(parse_difficulty(value(&mut args, &flag)?)?)
                     }
                     "--mode" => run.mode = value(&mut args, &flag)?,
-                    "--effort" => run.effort = value(&mut args, &flag)?,
+                    "--effort" => run.effort = Some(value(&mut args, &flag)?),
                     "--model" => run.model = value(&mut args, &flag)?,
                     "--task" => {
                         let id = value(&mut args, &flag)?;
@@ -282,11 +288,13 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             if !["edit", "read"].contains(&run.mode.as_str()) {
                 return Err(Error::usage("--mode must be edit or read"));
             }
-            if !["low", "medium", "high", "xhigh"].contains(&run.effort.as_str()) {
-                return Err(Error::usage("invalid --effort"));
-            }
-            if run.agent == "agy" && run.effort == "xhigh" {
-                return Err(Error::usage("agy effort must be low, medium or high"));
+            if let Some(effort) = &run.effort {
+                if !["low", "medium", "high", "xhigh"].contains(&effort.as_str()) {
+                    return Err(Error::usage("invalid --effort"));
+                }
+                if run.agent == "agy" && effort == "xhigh" {
+                    return Err(Error::usage("agy effort must be low, medium or high"));
+                }
             }
             if run.model.is_empty() || run.base.is_empty() || run.base.starts_with('-') {
                 return Err(Error::usage("invalid model or base ref"));

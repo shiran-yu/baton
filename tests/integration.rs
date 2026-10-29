@@ -123,7 +123,7 @@ fn json(out: &Output) -> Value {
 }
 
 #[test]
-fn run_lean_profile_result_resume_and_accept() {
+fn run_profile_result_resume_and_accept() {
     let f = Fixture::new();
     let out = f.run("good", "Write one file", "test -f src/output.txt");
     code(&out, 0);
@@ -146,19 +146,17 @@ fn run_lean_profile_result_resume_and_accept() {
     assert_eq!(f.git(&["branch", "--list", "baton/good"]), "+ baton/good");
     let task = f.task("good");
     let args = fs::read_to_string(task.join("argv-no.txt")).unwrap();
+    // The user's config loads; edit mode keeps Codex's default web search.
     let expected = vec![
         "exec".to_string(),
-        "--ignore-user-config".into(),
         "-m".into(),
-        "gpt-6.1-sol".into(),
+        "gpt-6-astra".into(),
         "-c".into(),
-        "model_reasoning_effort=\"medium\"".into(),
+        "model_reasoning_effort=\"xhigh\"".into(),
         "-c".into(),
         "model_reasoning_summary=\"none\"".into(),
         "-c".into(),
         "model_verbosity=\"low\"".into(),
-        "-c".into(),
-        "web_search=\"disabled\"".into(),
         "-c".into(),
         "features.apps=false".into(),
         "-s".into(),
@@ -372,7 +370,7 @@ fn read_mode_outside_git_uses_current_directory_and_acceptance() {
 }
 
 #[test]
-fn edit_and_agy_outside_git_give_clear_errors() {
+fn edit_outside_git_errors_and_agy_reads_outside_git() {
     let f = Fixture::new();
     let brief = f.brief("outside", "FAKE_NO_EDIT", "true");
     let edit = f
@@ -386,21 +384,42 @@ fn edit_and_agy_outside_git_give_clear_errors() {
     assert!(String::from_utf8_lossy(&edit.stderr)
         .contains("current directory must be inside a git repository"));
     assert!(!f.home.exists());
+    let user = f.dir.join("user-home");
+    fs::create_dir_all(f.dir.join("src/target")).unwrap();
+    fs::write(f.dir.join("src/notes.txt"), "").unwrap();
+    fs::write(f.dir.join("src/target/skipped.txt"), "").unwrap();
     let agy = f
         .command()
         .current_dir(&f.dir)
+        .env("HOME", &user)
         .args(["run", "agy", "--task", "outside", "--brief"])
         .arg(&brief)
         .args(["--mode", "read", "--json"])
         .output()
         .unwrap();
-    code(&agy, 1);
-    assert_eq!(json(&agy)["status"], "failed");
-    assert!(json(&agy)["notes"]
+    code(&agy, 0);
+    assert_eq!(json(&agy)["status"], "done");
+    // Nothing is written into the folder; the read-only agent lives in agy's global agents dir.
+    assert!(!f.dir.join(".agents").exists());
+    let agent =
+        fs::read_to_string(user.join(".gemini/config/agents/baton-read-worker.md")).unwrap();
+    assert!(agent.starts_with("---\nname: baton-read-worker\n"));
+    for tool in ["write_to_file", "replace_file_content", "run_command"] {
+        assert!(!agent.contains(tool));
+    }
+    let args = fs::read_to_string(f.task("outside").join("agy-argv.txt")).unwrap();
+    assert!(args.contains("--agent\nbaton-read-worker\n"));
+    // Outside git the Files globs are expanded by a walk that skips target/.
+    let root = fs::canonicalize(&f.dir).unwrap();
+    let turns = fs::read_to_string(f.task("outside").join("agy-turns.jsonl")).unwrap();
+    let content = serde_json::from_str::<Value>(turns.trim()).unwrap()["message"]["content"]
         .as_str()
         .unwrap()
-        .contains("agy requires a git repository for agent setup"));
-    assert!(!f.dir.join(".agents").exists());
+        .to_string();
+    assert!(content.contains(&format!(
+        "Files in scope:\n- {}\n\n",
+        root.join("src/notes.txt").display()
+    )));
 }
 
 #[test]
@@ -433,6 +452,9 @@ fn read_mode_custom_options_and_generated_id() {
     assert!(args.contains("-s\nread-only\n"));
     assert!(args.contains("model_reasoning_effort=\"xhigh\""));
     assert!(args.contains("-m\ncustom-model\n"));
+    // Read mode means local files only.
+    assert!(args.contains("-c\nweb_search=\"disabled\"\n"));
+    assert!(!args.contains("--ignore-user-config"));
     assert_eq!(
         Path::new(result["worktree"].as_str().unwrap())
             .canonicalize()
@@ -545,7 +567,7 @@ fn run_agy(f: &Fixture, id: &str, goal: &str, acceptance: &str, extra: &[&str]) 
 }
 
 #[test]
-fn agy_verified_lean_agent_and_exact_exclusion() {
+fn agy_verified_worker_agent_and_exact_exclusion() {
     let f = Fixture::new();
     fs::create_dir_all(f.repo.join(".agents/plugins")).unwrap();
     fs::write(f.repo.join(".agents/plugins/tracked.md"), "tracked").unwrap();
@@ -568,7 +590,7 @@ fn agy_verified_lean_agent_and_exact_exclusion() {
     assert_eq!(f.read("agy", "status.json")["last"], "write_to_file");
     let wt = fs::canonicalize(f.dir.join("agy-wt")).unwrap().join("agy");
     let agent = fs::read_to_string(wt.join(".agents/agents/baton-worker.md")).unwrap();
-    assert_eq!(agent, "---\nname: baton-worker\ndescription: Bounded baton worker\nexcludeDefaultComponents: true\ninheritCustomizations: false\nsubagent: false\ntools:\n  - view_file\n  - list_dir\n  - find_by_name\n  - grep_search\n  - write_to_file\n  - replace_file_content\n  - multi_replace_file_content\n  - finish\n---\nStay inside the files listed in the brief. Never run commands; baton runs the acceptance commands. Call finish with the result object.\n");
+    assert_eq!(agent, "---\nname: baton-worker\ndescription: Bounded baton worker\nexcludeDefaultComponents: false\ninheritCustomizations: true\nsubagent: false\ntools:\n  - view_file\n  - list_dir\n  - find_by_name\n  - grep_search\n  - write_to_file\n  - replace_file_content\n  - multi_replace_file_content\n  - finish\n---\nStay inside the files listed in the brief. Never run commands; baton runs the acceptance commands. Call finish with the result object.\n");
     let exclude = fs::read_to_string(f.repo.join(".git/info/exclude")).unwrap();
     assert!(exclude
         .lines()
@@ -583,6 +605,7 @@ fn agy_verified_lean_agent_and_exact_exclusion() {
     assert!(String::from_utf8_lossy(&changed.stdout).contains(".agents/plugins/tracked.md"));
     let task = f.task("agy");
     let args = fs::read_to_string(task.join("agy-argv.txt")).unwrap();
+    // The strongest model `agy models` lists; agy takes no --effort for it.
     assert_eq!(
         args.lines().collect::<Vec<_>>(),
         vec![
@@ -593,9 +616,7 @@ fn agy_verified_lean_agent_and_exact_exclusion() {
             "--agent",
             "baton-worker",
             "--model",
-            "gemini-3.8-flash",
-            "--effort",
-            "medium",
+            "claude-opus-4-6-thinking",
             "--mode",
             "accept-edits",
             "--json-schema",
@@ -604,18 +625,72 @@ fn agy_verified_lean_agent_and_exact_exclusion() {
             "1800s"
         ]
     );
+    assert_eq!(result["model"], "claude-opus-4-6-thinking");
+    assert_eq!(result["effort"], "");
     assert!(task.join("agy-closed").exists());
     assert_eq!(f.read("agy", "meta.json")["thread_id"], "fake-agy");
     let turns = fs::read_to_string(task.join("agy-turns.jsonl")).unwrap();
     let turn: Value = serde_json::from_str(turns.trim()).unwrap();
     assert_eq!(turn["event"], "user");
+    // The first message names the absolute workspace root before the brief.
+    let root = wt.to_str().unwrap();
     assert_eq!(
         turn["message"]["content"],
-        fs::read_to_string(task.join("brief.md")).unwrap()
+        format!(
+            "Workspace root: {root}\nEvery path in this brief is relative to {root}. Never list, search or read anything outside it.\n\n{}",
+            fs::read_to_string(task.join("brief.md")).unwrap()
+        )
     );
     // Restore the tracked file so accept can confirm the generated agent is ignored.
     fs::write(wt.join(".agents/plugins/tracked.md"), "tracked").unwrap();
     code(&f.call(&["accept", "agy"]), 0);
+}
+
+#[test]
+fn agy_falls_back_to_the_next_listed_model() {
+    let f = Fixture::new();
+    // After the Claude 4.6 models leave agy: Gemini at its highest listed effort.
+    for (id, extra, model, effort) in [
+        ("gone", vec![], "gemini-3.8-flash", Some("high")),
+        (
+            "low",
+            vec!["--effort", "low"],
+            "gemini-3.8-flash",
+            Some("low"),
+        ),
+        (
+            "custom",
+            vec!["--model", "other-model"],
+            "other-model",
+            None,
+        ),
+    ] {
+        let out = f
+            .command()
+            .env(
+                "FAKE_AGY_MODELS",
+                "gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low",
+            )
+            .args(["run", "agy", "--task", id, "--brief"])
+            .arg(f.brief(id, "Write a file", "true"))
+            .arg("--json")
+            .args(extra)
+            .output()
+            .unwrap();
+        code(&out, 0);
+        let args = fs::read_to_string(f.task(id).join("agy-argv.txt")).unwrap();
+        assert!(args.contains(&format!("--model\n{model}\n")), "{args}");
+        match effort {
+            Some(effort) => assert!(args.contains(&format!("--effort\n{effort}\n")), "{args}"),
+            None => assert!(!args.contains("--effort"), "{args}"),
+        }
+        assert_eq!(json(&out)["model"], model);
+    }
+    // agy refuses --effort for a Claude model, so an explicit one is dropped there.
+    let out = run_agy(&f, "opus", "Write a file", "true", &["--effort", "low"]);
+    code(&out, 0);
+    let args = fs::read_to_string(f.task("opus").join("agy-argv.txt")).unwrap();
+    assert!(args.contains("--model\nclaude-opus-4-6-thinking\n") && !args.contains("--effort"));
 }
 
 #[test]
@@ -688,7 +763,7 @@ fn codex_and_agy_auto_fix_and_explicit_agy_fix() {
         } else {
             assert_eq!(json(&out)["tokens"]["input"], 380738);
             let args = fs::read_to_string(f.task(agent).join("argv-yes.txt")).unwrap();
-            assert!(args.starts_with("exec\nresume\nfake-thread-123\n--ignore-user-config\n"));
+            assert!(args.starts_with("exec\nresume\nfake-thread-123\n-m\ngpt-6-astra\n"));
         }
     }
     let ledger = fs::read_to_string(f.home.join("ledger.jsonl")).unwrap();
@@ -784,7 +859,7 @@ fn wait_max_progress_then_worker_exit_codes() {
     code(&waiting, 7);
     let line = String::from_utf8(waiting.stdout).unwrap();
     assert_eq!(line.lines().count(), 1);
-    assert!(line.starts_with("codex · medium · "));
+    assert!(line.starts_with("codex · xhigh · "));
     for label in [" files", " cmds", " tok", "tests"] {
         assert!(!line.contains(label), "{line}");
     }
@@ -807,8 +882,28 @@ fn wait_max_progress_then_worker_exit_codes() {
 fn worker_environment_allowlist_and_agy_read_tools() {
     let f = Fixture::new();
     code(&f.run("env-codex", "Write a file", "true"), 0);
-    let out = run_agy(&f, "env-agy", "FAKE_NO_EDIT", "true", &["--mode", "read"]);
+    fs::create_dir_all(f.repo.join("src")).unwrap();
+    fs::write(f.repo.join("src/lib.rs"), "").unwrap();
+    let user = f.dir.join("user-home");
+    let out = f
+        .command()
+        .env("HOME", &user)
+        .args(["run", "agy", "--task", "env-agy", "--brief"])
+        .arg(f.brief("env-agy", "FAKE_NO_EDIT", "true"))
+        .args(["--json", "--mode", "read"])
+        .output()
+        .unwrap();
     code(&out, 0);
+    // Read mode names the root as a workspace and lists the brief's files as absolute paths.
+    let repo = f.repo.to_str().unwrap();
+    let args = fs::read_to_string(f.task("env-agy").join("agy-argv.txt")).unwrap();
+    assert!(args.ends_with(&format!("--add-dir\n{repo}\n")));
+    let turns = fs::read_to_string(f.task("env-agy").join("agy-turns.jsonl")).unwrap();
+    let turn: Value = serde_json::from_str(turns.trim()).unwrap();
+    assert!(turn["message"]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with(&format!("Workspace root: {repo}\nEvery path in this brief is relative to {repo}. Never list, search or read anything outside it.\nFiles in scope:\n- {repo}/src/lib.rs\n\n## Goal\n")));
     for (task, file) in [
         ("env-codex", "environment.txt"),
         ("env-agy", "agy-environment.txt"),
@@ -829,13 +924,23 @@ fn worker_environment_allowlist_and_agy_read_tools() {
         assert!(!env.contains("should-be-removed"));
         assert_eq!(env.contains("XDG_CONFIG_HOME="), task == "env-agy");
     }
-    let agent = fs::read_to_string(f.repo.join(".agents/agents/baton-worker.md")).unwrap();
+    // A read run inside git also writes nothing into the live repo.
+    assert!(!f.repo.join(".agents").exists());
+    let exclude = fs::read_to_string(f.repo.join(".git/info/exclude")).unwrap_or_default();
+    assert!(!exclude.contains("baton"));
+    assert!(args.contains("--agent\nbaton-read-worker\n"));
+    let agent =
+        fs::read_to_string(user.join(".gemini/config/agents/baton-read-worker.md")).unwrap();
+    assert!(agent.starts_with("---\nname: baton-read-worker\n"));
+    assert!(agent.contains("excludeDefaultComponents: false\ninheritCustomizations: true\n"));
     assert!(agent.contains("  - finish\n"));
     for tool in [
         "write_to_file",
         "replace_file_content",
         "multi_replace_file_content",
         "run_command",
+        "list_dir",
+        "find_by_name",
     ] {
         assert!(!agent.contains(tool));
     }
@@ -944,7 +1049,8 @@ fn route_json_human_output_overrides_and_cached_quotas() {
     code(&out, 0);
     let r = json(&out);
     assert_eq!(r["choice"]["agent"], "codex");
-    assert_eq!(r["choice"]["effort"], "medium");
+    assert_eq!(r["choice"]["model"], "gpt-6-astra");
+    assert_eq!(r["choice"]["effort"], "xhigh");
     assert_eq!(r["runner_up"]["agent"], "agy");
     assert_eq!(r["choice"]["cost"], 120_000.0);
     let out = f
@@ -985,7 +1091,11 @@ fn route_json_human_output_overrides_and_cached_quotas() {
 
 #[test]
 fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
-    for (agent, codex_used) in [("codex", 0.1), ("agy", 0.96)] {
+    // No 3p bucket in the cache, so agy routes to Gemini at its highest listed effort.
+    for (agent, codex_used, model, effort) in [
+        ("codex", 0.1, "gpt-6-astra", "xhigh"),
+        ("agy", 0.96, "gemini-3.8-flash", "high"),
+    ] {
         let f = Fixture::new();
         cache_usage(&f, codex_used);
         let brief = f.brief("auto", "Build a widget", "test -f src/output.txt");
@@ -998,7 +1108,8 @@ fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
             .unwrap();
         code(&out, 0);
         assert_eq!(json(&out)["agent"], agent);
-        assert_eq!(json(&out)["effort"], "medium");
+        assert_eq!(json(&out)["model"], model);
+        assert_eq!(json(&out)["effort"], effort);
         let notes = f.dir.join("fix.md");
         fs::write(&notes, "Append a correction.").unwrap();
         code(
@@ -1110,6 +1221,9 @@ fn review_has_separate_artifacts_and_classified_ledger_entry() {
     code(&out, 0);
     let reviewed = json(&out);
     assert_eq!(reviewed["verified"], true);
+    // Reviews run the strongest model and effort, whatever the task's difficulty.
+    assert_eq!(reviewed["model"], "gpt-6-astra");
+    assert_eq!(reviewed["effort"], "xhigh");
     let review_task = reviewed["task"].as_str().unwrap();
     assert_ne!(review_task, "source");
     assert!(fs::read_to_string(f.task(review_task).join("argv-no.txt"))
@@ -1174,17 +1288,17 @@ fn wait_progress_omits_zero_counts_and_keeps_nonzero_counts() {
     let mut status = f.read("progress", "status.json");
     status["phase"] = "running".into();
     for (files, commands, tokens, tests, expected) in [
-        (0, 0, 0, "", "codex · medium · "),
-        (0, 4, 0, "0", "codex · medium · 4 cmds · "),
-        (2, 0, 42, "0/0", "codex · medium · 2 files · 42 tok · "),
+        (0, 0, 0, "", "codex · xhigh · "),
+        (0, 4, 0, "0", "codex · xhigh · 4 cmds · "),
+        (2, 0, 42, "0/0", "codex · xhigh · 2 files · 42 tok · "),
         (
             2,
             4,
             1234,
             "1/2",
-            "codex · medium · 2 files · 4 cmds · tests 1/2 · 1k tok · ",
+            "codex · xhigh · 2 files · 4 cmds · tests 1/2 · 1k tok · ",
         ),
-        (0, 0, 0, "0/2", "codex · medium · tests 0/2 · "),
+        (0, 0, 0, "0/2", "codex · xhigh · tests 0/2 · "),
     ] {
         status["files"] = files.into();
         status["commands"] = commands.into();

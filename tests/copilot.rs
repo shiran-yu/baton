@@ -37,6 +37,7 @@ impl Fixture {
         f.script(
             "copilot",
             r#"if [ "$1" = --version ]; then echo copilot-fake-1.0.103; exit 0; fi
+if [ "$1" = --help ]; then /bin/cat "$HOME/help" 2>/dev/null; exit 0; fi
 printf '%s\n' "$@" > "$HOME/argv"
 pwd > "$HOME/cwd"
 /usr/bin/env > "$HOME/worker-env"
@@ -231,6 +232,17 @@ fn quota_floor_is_enforced_before_worker_and_can_be_overridden() {
     let r = f.result(&out, 4);
     assert!(r["notes"].as_str().unwrap().contains("below floor 20"));
     assert!(!f.dir.join("argv").exists());
+    // A balance exactly at the floor is refused, as routing skips it.
+    let out = f
+        .run_command("at-floor")
+        .env("BATON_COPILOT_FLOOR", "19")
+        .output()
+        .unwrap();
+    assert!(f.result(&out, 4)["notes"]
+        .as_str()
+        .unwrap()
+        .contains("at or below floor 19"));
+    assert!(!f.dir.join("argv").exists());
     // A reserve-floor refusal does not exhaust the account or require a refresh.
     let out = f
         .run_command("override")
@@ -238,6 +250,133 @@ fn quota_floor_is_enforced_before_worker_and_can_be_overridden() {
         .output()
         .unwrap();
     assert_eq!(f.result(&out, 0)["status"], "done");
+}
+
+#[test]
+fn lean_flags_follow_help() {
+    let f = Fixture::new();
+    let argv = || fs::read_to_string(f.dir.join("argv")).unwrap();
+    // A CLI without the flags gets none of them.
+    f.result(&f.run_command("old-cli").output().unwrap(), 0);
+    let args = argv();
+    assert!(!args.contains("--context") && !args.contains("--disable-client-telemetry"));
+    fs::write(
+        f.dir.join("help"),
+        "  --context <tier>\n  --auto-tier <preference>\n  --disable-client-telemetry\n  --max-ai-credits <credits>\n",
+    )
+    .unwrap();
+    f.result(&f.run_command("new-cli").output().unwrap(), 0);
+    let args = argv();
+    for flag in ["--context\ndefault\n", "--disable-client-telemetry\n"] {
+        assert!(args.contains(flag), "{flag}: {args}");
+    }
+    // The credit cap and the auto tier wait for a live account to validate them.
+    assert!(!args.contains("--max-ai-credits") && !args.contains("--auto-tier"));
+}
+
+#[test]
+fn ended_subscription_is_unavailable_in_usage_routing_and_run() {
+    let f = Fixture::new();
+    fs::write(
+        f.dir.join("quota.json"),
+        json!({"copilot_plan":"individual","access_type_sku":"subscription_ended","quota_snapshots":null}).to_string(),
+    )
+    .unwrap();
+    // gh must read the quota with the worker's token.
+    f.script(
+        "gh",
+        r#"[ "$GH_TOKEN" = worker-token-value ] || exit 8
+/bin/cat "$HOME/quota.json""#,
+    );
+    let ended = "copilot unavailable: subscription ended";
+    let out = f
+        .command()
+        .env("COPILOT_GITHUB_TOKEN", "worker-token-value")
+        .args(["usage", "--refresh", "--json"])
+        .output()
+        .unwrap();
+    let usage = f.result(&out, 0);
+    let copilot = usage["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["agent"] == "copilot")
+        .unwrap();
+    assert_eq!(copilot["error"], ended);
+    for text in [
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+        fs::read_to_string(f.dir.join("state/usage.json")).unwrap(),
+    ] {
+        assert!(!text.contains("worker-token-value"));
+    }
+    let out = f
+        .command()
+        .args([
+            "route",
+            "--brief",
+            "project/brief.md",
+            "--mode",
+            "read",
+            "--difficulty",
+            "1",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let route = f.result(&out, 0);
+    assert_eq!(route["choice"]["agent"], "claude");
+    let candidate = route["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["agent"] == "copilot")
+        .unwrap();
+    assert_eq!(candidate["skipped"], ended);
+    let out = f.run_command("ended").output().unwrap();
+    assert_eq!(f.result(&out, 4)["notes"], ended);
+    assert!(!f.dir.join("argv").exists());
+}
+
+#[test]
+fn rejected_worker_token_falls_back_to_gh_login() {
+    let f = Fixture::new();
+    // gh rejects the worker token but works with its own login.
+    f.script(
+        "gh",
+        r#"echo call >> "$HOME/gh-calls"
+[ -z "$GH_TOKEN" ] || { echo "bad credentials $GH_TOKEN" >&2; exit 8; }
+/bin/cat "$HOME/quota.json""#,
+    );
+    let out = f
+        .command()
+        .env("COPILOT_GITHUB_TOKEN", "stale-token-value")
+        .args(["usage", "--refresh", "--json"])
+        .output()
+        .unwrap();
+    let usage = f.result(&out, 0);
+    let copilot = usage["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["agent"] == "copilot")
+        .unwrap();
+    assert!(copilot["error"].is_null(), "{copilot}");
+    assert_eq!(copilot["remaining"], 124.0);
+    assert_eq!(
+        fs::read_to_string(f.dir.join("gh-calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    for text in [
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+        fs::read_to_string(f.dir.join("state/usage.json")).unwrap(),
+    ] {
+        assert!(!text.contains("stale-token-value"));
+    }
 }
 
 #[test]
@@ -384,4 +523,3 @@ esac"#,
         .contains("bind mount failed"));
     assert!(!f.dir.join("argv").exists());
 }
-

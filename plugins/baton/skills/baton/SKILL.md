@@ -26,6 +26,12 @@ baton route --brief <file>        # worker, model, effort and the reason
 
 Follow the route unless you know better; say why if you override it.
 
+Every worker runs its strongest model at its highest effort, with the user's own plugins and
+skills (user, 2026-10-29: reliability over cost): Codex `gpt-6-astra` at `xhigh` with the user's
+`~/.codex/config.toml`; agy the strongest model `agy models` lists (Claude Opus 4.6 until it leaves
+agy on 2026-11-02, then Gemini 3.8 Flash at `high`). Routing picks the worker, never a weaker model
+or effort. Do not pass `--model` or `--effort` to save quota.
+
 ## 2. Write the brief
 
 Save it under the repo's `.baton/` (git-ignored) as Markdown with these headings:
@@ -57,8 +63,8 @@ Make acceptance commands strong enough that passing them means done: baton rerun
 
 Visible in the agent panel (recommended): call the Agent tool with `subagent_type` `baton:codex` or
 `baton:agy`, a description naming the job, and a prompt of one line:
-`brief: /abs/path/.baton/brief-x.md  flags: --effort medium`. The panel row shows live progress
-(`codex · medium · 3 files · tests 12/14 · 80k tok · 5h 14%`).
+`brief: /abs/path/.baton/brief-x.md` (with `flags: --mode read` for a read brief). The panel row
+shows live progress (`codex · xhigh · 3 files · tests 12/14 · 80k tok · 5h 14%`).
 
 Zero lead tokens while it runs: `baton run codex --brief <file> --json` with Bash
 `run_in_background: true`; you are notified when it exits. Several independent tasks can run at
@@ -72,7 +78,7 @@ scope, acceptance rerun), `files_changed`, `diffstat`, `out_of_scope`, `acceptan
 
 - `verified: true` and the diffstat fits the goal → read the diff (`baton show <task> --diff`),
   skim for design problems the tests cannot see, then `baton accept <task>`.
-- For larger diffs, get a cheap second opinion first: `baton review <task> --by agy` (or `--by codex`).
+- For larger diffs, get a second opinion first: `baton review <task> --by agy` (or `--by codex`).
 - Fixable problems → write the fix list to a file and `baton fix <task> --notes <file>`. Two
   rounds at most, then take it over yourself.
 - `needs_decision` → answer the `questions` in a notes file and `baton fix`.
@@ -88,7 +94,13 @@ sweeping experiment plans and logs for numbers, surveying what a code base or a 
 on a question, checking a claim against its source, extracting a table. Run with `--mode read`:
 Codex gets a read-only sandbox with web search off, so local files only. Read mode makes no
 worktree and needs no git repository, so `--no-worktree` is implied; run it from the project
-folder. Several read briefs can run at once, one per slice of the material.
+folder. Several read briefs can run at once, one per slice of the material. agy reads too, inside
+or outside git, and writes nothing into the folder (its read-only agent lives in
+`~/.gemini/config/agents/`): baton names the absolute folder as its workspace, forbids anything
+outside it (agy's headless mode also denies reads outside the workspace), and expands `## Files`
+into at most 200 explicit paths, because the read agent has no listing or file-search tools (only
+`view_file` and `grep_search`). So list what to read in `## Files`, with a literal leading folder
+(`src/**`, not `**/*.rs`) in a large folder outside git.
 
 The four headings stay (baton checks them); fill them for reading:
 
@@ -114,15 +126,17 @@ re-read it at its cited `file:line`.
 Copilot is for bounded read-only checks completed in one prompt, never judgement. Use
 `baton run copilot --brief <file> --mode read` (or relay through `baton:copilot`); each run costs
 one premium request out of 200 a month, whatever the number of tool calls. Baton requires a
-read-only namespace and refuses below its premium-request floor.
+read-only namespace and refuses at or below its premium-request floor, as routing does. An ended
+subscription shows as `copilot unavailable: subscription ended` in usage, routing and runs.
 
 ## Quota discipline
 
 - `baton usage` before a batch of work; `baton route` already weighs remaining quota and pace.
-- Codex and agy calls carry a fixed prompt of 12–15k tokens each (mostly cached for Codex). Batch
-  related changes into one brief rather than many small ones.
+- With the user's plugins loaded, a two-line read brief took Codex 56k input tokens (37k cached)
+  and agy on Opus 13k (10k cached). Batch related changes into one brief rather than many small
+  ones; never trade model or effort for quota.
 - Do not resume agy conversations; baton starts fresh runs for agy fixes on purpose.
 
 ## Reference
 
-Command maps, lean flags and measured usage costs of the supported CLIs: the `baton-reference` skill.
+Command maps, flags and measured usage of the supported CLIs: the `baton-reference` skill.

@@ -125,7 +125,7 @@ fn dispatch(cli: Cli) -> Res<i32> {
         return Ok(0);
     }
     if let Cli::Help = cli {
-        println!("baton run <codex|agy|copilot|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--mode edit|read] [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton setup [--plan [--json] | --apply ID[,ID...] [--yes]]\nbaton sync [--dry-run] [--to codex,agy] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
+        println!("baton run <codex|agy|copilot|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--mode edit|read] [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|hint|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton setup [--plan [--json] | --apply ID[,ID...] [--yes]]\nbaton sync [--dry-run] [--to codex,agy,copilot] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
         return Ok(0);
     }
     let home = paths::home()?;
@@ -364,12 +364,15 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
         }
         run.agent = choice.agent;
         run.model = choice.model.unwrap_or_default();
-        run.effort = choice.effort.unwrap_or_default();
+        run.effort = choice.effort;
     }
     if run.agent == "copilot" && run.mode != "read" {
         return Err(Error::usage("copilot runs read briefs only"));
     }
     brief::lint(&brief.text)?;
+    if run.agent == "agy" {
+        (run.model, run.effort) = agy::choose(&run.model, run.effort);
+    }
     // Copilot reads the same folder as Codex in read mode: the git root, else the current folder.
     let read_folder: Option<PathBuf> = None;
     let detected_root = if let Some(folder) = &read_folder {
@@ -444,7 +447,7 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
         task,
         agent: run.agent,
         model: run.model,
-        effort: run.effort,
+        effort: run.effort.unwrap_or_default(),
         mode: run.mode,
         task_type: class.task_type,
         difficulty: class.difficulty,
@@ -576,7 +579,7 @@ fn execute(
     let mut progress = Progress::new(dir, meta, json)?;
     let start = Instant::now();
     let mut driver: Box<dyn worker::Worker> = if meta.agent == "agy" {
-        match agy::Agy::new(dir, meta) {
+        match agy::Agy::new(dir, meta, &brief.files) {
             Ok(driver) => Box::new(driver),
             Err(e) => Box::new(FailedWorker(Some(e))),
         }
@@ -819,18 +822,14 @@ fn review(home: &Path, task: &str, by: String) -> Res<i32> {
     meta.task = format!("review-{}", paths::id());
     cli::task_id(&meta.task)?;
     meta.agent = by;
-    meta.model = if meta.agent == "agy" {
-        "gemini-3.8-flash"
+    // The reviewer's strongest model and highest effort, whatever the task's difficulty.
+    let (model, effort) = if meta.agent == "agy" {
+        agy::choose(agy::MODELS[0], None)
     } else {
-        "gpt-6.1-sol"
-    }
-    .into();
-    meta.effort = ["low", "medium", "high", "xhigh"][(if meta.agent == "agy" {
-        meta.difficulty.min(3)
-    } else {
-        meta.difficulty
-    } - 1) as usize]
-        .into();
+        (codex::MODEL.into(), Some(codex::EFFORT.into()))
+    };
+    meta.model = model;
+    meta.effort = effort.unwrap_or_default();
     meta.mode = "read".into();
     meta.task_type = "review".into();
     meta.branch.clear();

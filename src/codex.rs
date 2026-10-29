@@ -17,6 +17,9 @@ use std::{
 };
 
 pub const SCHEMA: &str = include_str!("../plugins/baton/schema/worker-result.json");
+// The strongest model in `codex debug models` (2026-10-29) at xhigh, as in the user's own config.
+pub const MODEL: &str = "gpt-6-astra";
+pub const EFFORT: &str = "xhigh";
 
 pub fn kill_group(child: &mut Child) {
     // A separate process group includes shells and grandchildren, without unsafe libc calls.
@@ -158,8 +161,8 @@ pub fn run(
                 .ok_or_else(|| Error::usage("task has no Codex thread_id"))?,
         );
     }
+    // The user's config loads too (plugins, skills, trusted hooks): reliability over cost.
     command.args([
-        "--ignore-user-config",
         "-m",
         &meta.model,
         "-c",
@@ -169,10 +172,12 @@ pub fn run(
         "-c",
         "model_verbosity=\"low\"",
         "-c",
-        "web_search=\"disabled\"",
-        "-c",
         "features.apps=false",
     ]);
+    // Read mode means local files only; edit mode keeps Codex's default.
+    if meta.mode == "read" {
+        command.args(["-c", "web_search=\"disabled\""]);
+    }
     let sandbox = if meta.mode == "read" {
         "read-only"
     } else {

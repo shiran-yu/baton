@@ -76,23 +76,41 @@ fn window(agent: &str, name: &str, used: f64, reset: u64, secs: u64, now: u64) -
     })
 }
 pub fn parse_codex(v: &Value, now: u64, rollout: bool) -> Res<Source> {
+    // rateLimits may describe another bucket (e.g. "premium" with null windows); prefer the codex one.
+    let top = &v["result"]["rateLimits"];
+    let by_id = &v["result"]["rateLimitsByLimitId"]["codex"];
     let rates = if rollout {
         v
+    } else if by_id.is_object() {
+        by_id
     } else {
-        &v["result"]["rateLimits"]
+        top
+    };
+    let limit = &rates[if rollout { "limit_id" } else { "limitId" }];
+    if !limit.is_null() && limit != "codex" {
+        return Err(invalid());
+    }
+    // Fields the per-id entry may omit come from rateLimits when it is the same bucket.
+    let same = |key: &str| {
+        rates[key].as_str().or_else(|| {
+            (!rollout && (top["limitId"].is_null() || top["limitId"] == "codex"))
+                .then(|| top[key].as_str())
+                .flatten()
+        })
     };
     let mut source = Source {
         agent: "codex".into(),
         stale: rollout,
+        // The plan is per account, so any bucket's value will do.
         plan_type: rates[if rollout { "plan_type" } else { "planType" }]
             .as_str()
+            .or_else(|| top["planType"].as_str())
             .map(String::from),
-        rate_limit_reached_type: rates[if rollout {
+        rate_limit_reached_type: same(if rollout {
             "rate_limit_reached_type"
         } else {
             "rateLimitReachedType"
-        }]
-        .as_str()
+        })
         .map(String::from),
         ordinary_usage_allowed: v["result"]["ordinaryUsageAllowed"]
             .as_bool()
@@ -135,6 +153,18 @@ pub fn parse_codex(v: &Value, now: u64, rollout: bool) -> Res<Source> {
     }
     if source.windows.is_empty() {
         return Err(invalid());
+    }
+    // An old rollout may predate a reset: a window past its reset is unused again.
+    if rollout {
+        for w in &mut source.windows {
+            if w.resets_at <= now {
+                w.used = 0.0;
+                w.pace = 0.0;
+            }
+        }
+        if source.windows.iter().all(|w| w.resets_at <= now) {
+            source.rate_limit_reached_type = None;
+        }
     }
     Ok(source)
 }
@@ -206,26 +236,41 @@ fn fallback_codex() -> Res<Source> {
     rollouts(&base.join("sessions"), &mut files);
     files
         .sort_by_cached_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).ok()));
-    let file = fs::File::open(
-        files
-            .first()
-            .ok_or_else(|| Error::new(1, "codex unavailable; no rollout quota cache"))?,
-    )?;
-    let mut last = None;
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.contains("\"rate_limits\"") {
-            last = Some(line);
+    if files.is_empty() {
+        return Err(Error::new(1, "codex unavailable; no rollout quota cache"));
+    }
+    // Newest rollout first; a rollout may end with a non-codex bucket or none at all.
+    for path in files.iter().take(10) {
+        let Ok(file) = fs::File::open(path) else {
+            continue;
+        };
+        let mut last = None;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            if !line.contains("\"rate_limits\"") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let rates = v
+                .get("rate_limits")
+                .or_else(|| v.get("payload").and_then(|p| p.get("rate_limits")));
+            if let Some(Ok(source)) = rates.map(|r| parse_codex(r, paths::now(), true)) {
+                last = Some(source);
+            }
+        }
+        if let Some(source) = last {
+            return Ok(source);
         }
     }
-    let v: Value = serde_json::from_str(&last.ok_or_else(invalid)?)?;
-    let rates = v
-        .get("rate_limits")
-        .or_else(|| v.get("payload").and_then(|p| p.get("rate_limits")))
-        .ok_or_else(invalid)?;
-    parse_codex(rates, paths::now(), true)
+    Err(Error::new(1, "no codex rate limits in recent rollouts"))
 }
+pub const COPILOT_ENDED: &str = "copilot unavailable: subscription ended";
 pub fn parse_copilot(v: &Value, now: u64) -> Res<Source> {
+    // An ended subscription reports no quota_snapshots at all.
+    if v["access_type_sku"] == "subscription_ended" {
+        return Err(Error::new(1, COPILOT_ENDED));
+    }
     let q = &v["quota_snapshots"]["premium_interactions"];
     let entitlement = number(&q["entitlement"])?;
     let remaining = number(&q["remaining"])?;
@@ -265,11 +310,21 @@ pub fn parse_copilot(v: &Value, now: u64) -> Res<Source> {
     })
 }
 fn live_copilot() -> Res<Source> {
-    let raw = process::capture(
-        Command::new("gh").args(["api", "/copilot_internal/user"]),
-        Duration::from_secs(20),
-    )
-    .map_err(|e| Error::new(1, format!("copilot quota via gh unavailable: {e}")))?;
+    let gh = || {
+        let mut gh = Command::new("gh");
+        gh.args(["api", "/copilot_internal/user"]);
+        gh
+    };
+    // Read the quota of the account the worker runs as; the token is passed, never logged.
+    let worker = std::env::var_os("COPILOT_GITHUB_TOKEN").and_then(|token| {
+        process::capture(gh().env("GH_TOKEN", token), Duration::from_secs(20)).ok()
+    });
+    // A token gh rejects falls back to gh's own login.
+    let raw = match worker {
+        Some(raw) => raw,
+        None => process::capture(&mut gh(), Duration::from_secs(20))
+            .map_err(|e| Error::new(1, format!("copilot quota via gh unavailable: {e}")))?,
+    };
     parse_copilot(&serde_json::from_str(&raw)?, paths::now())
 }
 
@@ -482,7 +537,13 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
     }
     type Reader = fn() -> Res<Source>;
     let sources: [(&str, Reader); 4] = [
-        ("codex", || live_codex().or_else(|_| fallback_codex())),
+        ("codex", || {
+            live_codex().or_else(|live| {
+                fallback_codex().map_err(|stale| {
+                    Error::new(stale.code, format!("live read: {live}; rollouts: {stale}"))
+                })
+            })
+        }),
         ("agy", || {
             let raw = process::capture(
                 Command::new(process::executable("agy")).args([

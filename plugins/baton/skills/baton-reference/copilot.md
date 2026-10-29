@@ -79,7 +79,33 @@ An unavailable model prints its error on stderr and emits no result event.
 isolation as other sources. The row exposes
 `quota_snapshots.premium_interactions.{entitlement,remaining,percent_remaining}` and
 `quota_reset_date`; for the measured fixture these are 200, 124, 62.3, and `2026-11-01`.
-A missing/failing `gh` produces an error row. A run refuses with fewer than 20 remaining
-premium requests (`BATON_COPILOT_FLOOR` overrides the floor), because this account permits billed
-overage. Routing considers Copilot only for read briefs of difficulty 1–2, strictly above the
-floor; edit routing is unchanged. `baton doctor` reports Copilot installation/version.
+A missing/failing `gh` produces an error row. When `COPILOT_GITHUB_TOKEN` is set, `gh` gets it as
+`GH_TOKEN`, so the quota read is for the worker's account; the token is never logged. A run refuses
+at or below 20 remaining premium requests (`BATON_COPILOT_FLOOR` overrides the floor), because this
+account permits billed overage. Routing considers Copilot only for read briefs of difficulty 1–2,
+strictly above the floor, the same comparison as the run; edit routing is unchanged. `baton doctor`
+reports Copilot installation/version.
+
+An ended subscription (2026-10-29: `access_type_sku` `subscription_ended`, `quota_snapshots`
+null) is reported as `copilot unavailable: subscription ended` in `baton usage`, as the skip
+reason in routing, and as the refusal of a run, instead of `invalid quota data`.
+
+## Worker flags
+
+Each run adds, only where the installed CLI's `--help` lists the flag (read once per run, nothing
+cached on disk): `--context default` (the help lists `default` and `long_context`) and
+`--disable-client-telemetry`.
+
+Pending a live account: `--max-ai-credits` (a spend cap for AI-credit billing; the quota read
+cannot reach a credit-billed account yet, because it needs `premium_interactions`) and
+`--auto-tier` (its value is validated against the account's catalog, so an unchecked value could
+fail every `auto` run). Copilot CLI 1.0.105 lists both; baton passes neither.
+
+## Plugins
+
+`baton sync --to copilot` registers each own marketplace's local checkout with
+`copilot plugin marketplace add <installLocation>` (Copilot reads Claude's
+`.claude-plugin/marketplace.json`) unless `copilot plugin marketplace list` shows it, then runs
+`copilot plugin install <name>@<marketplace>` unless `copilot plugin list --json` (or the plain
+list) shows it. Trading plugins need `--include-trading`, as for agy. Copilot is a default sync
+host only when its CLI is on `PATH`.

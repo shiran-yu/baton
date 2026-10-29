@@ -18,7 +18,7 @@ Raw material: `baton-research/agy-help/` (help dumps, changelog), `baton-researc
 | `--json-schema '<json>'\|path.json` | The root must be `"type":"object"`. Inline JSON or a file path both work. `string` or other bare type names give exit 1 [M] (the docs still claim primitives work, which is stale). |
 | `--print-timeout <dur>` | Go duration (`90s`, `15m`). The help says `default 0s` = unlimited (the docs still say 5m, which is stale [C]). When it expires, the CLI returns the partial output, **exits 0** and prints a warning on stderr [C]. |
 | `--model <slug>` | Unknown slug in `-p`: exit 1 and a list of models [D/C]. A base name without effort is accepted (`gemini-3.8-flash`) [M]. |
-| `--effort low\|medium\|high\|xhigh\|max` | Per invocation; not persisted. The levels available depend on the model (this account: low/medium/high) [M]. |
+| `--effort low\|medium\|high\|xhigh\|max` | Per invocation; not persisted. The levels available depend on the model (this account: low/medium/high for Gemini 3.8 Flash) [M]. The Claude and GPT-OSS models take none: `--effort high` with `claude-opus-4-6-thinking` exits 1 with `--effort is not supported for model` [M, 2026-10-29]. |
 | `--agent <name>` | Custom agent. Unknown name in `-p`: exit 1 with `error: unknown agent "x" (available: …)` [M]. |
 | `--mode accept-edits\|auto\|plan` | **An unknown value only warns and runs in default mode** [M]. `auto` = "not available for this account" warning, then default mode [M]. |
 | `--sandbox` | OS sandbox for terminal commands (Seatbelt on macOS). No network; only the workspace and temp are writable [D]. |
@@ -33,7 +33,7 @@ Raw material: `baton-research/agy-help/` (help dumps, changelog), `baton-researc
 ### 1.2 Subcommands [M]
 | Command | Behaviour |
 |---|---|
-| `agy models` | TSV `slug\tLabel`. Progress goes to stderr. This account: `gemini-3.8-flash-{high,medium,low}`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`. The Claude 4.6 models and GPT-OSS are **removed on 2026-11-02** [D]. |
+| `agy models` | TSV `slug\tLabel`. Progress goes to stderr. Free, about 3 s. This account: `gemini-3.8-flash-{high,medium,low}`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium` (same on 2026-10-29, agy 1.4.10). The Claude 4.6 models and GPT-OSS are **removed on 2026-11-02** [D]. baton reads it before every run to pick the model (2.1). |
 | `agy agents` / `agy agent` | **Printed nothing** in a pipe, even with a workspace agent present, and rejects `--output-format` (contrary to the changelog). Use `agy -p /agents --output-format json` instead. |
 | `agy mcp add [--type stdio\|http] [-e K=V]… [-H "K: V"]… <name> <cmdOrUrl> [args…]` | Flags must come **before** `<name>`; use `--` before args that start with `-`. Also `remove/list/enable/disable <name>`. Writes **global** `~/.gemini/config/mcp_config.json`. |
 | `agy plugin list [--json] \| import [gemini\|claude] \| install <target> \| uninstall <name> \| enable/disable <name> \| validate [path] [--strict] [--json] \| link <mp> <target>` | Alias: `plugins`. Subcommands **do not parse `--help`**: `agy plugin uninstall --help` printed `Uninstalled plugin "--help"`. The install target is a dir, a GitHub URL or `name[@antigravity-plugins-official]`. |
@@ -48,7 +48,7 @@ Raw material: `baton-research/agy-help/` (help dumps, changelog), `baton-researc
 
 Useful payloads [M]:
 - `/model`: `{"id":"gemini-3.8-flash-high","label":"Gemini 3.8 Flash (High)","effort":"high","is_default":false}`
-- `/effort`: `{"adjustable":true,"current":"high","available":["low","medium","high"]}`
+- `/effort`: `{"adjustable":true,"current":"high","available":["low","medium","high"]}`; with `--model claude-opus-4-6-thinking` (or `claude-sonnet-4-6`, `gpt-oss-120b-medium`): `{"adjustable":false}`
 - `/agents`: `{"agents":["lean"]}` (the cwd's workspace agents plus global ones)
 - `/hooks`: `{"hooks":[{name,enabled,source,actions:[{event,matcher,type,command,timeout_seconds}]}]}`. Use it at baton start-up to detect foreign global hooks (section 7).
 - `/permissions`: scopes `project`, `shared` (`~/.gemini/config/config.json`), `global` (`~/.gemini/antigravity-cli/settings.json`).
@@ -71,9 +71,10 @@ Useful payloads [M]:
 ### 2.1 Invariants for every run
 ```sh
 cd "$WORKTREE" && agy -p "$PROMPT" \
-  --agent "$AGENT" --model gemini-3.8-flash --effort low \
+  --agent "$AGENT" --model claude-opus-4-6-thinking \
   --output-format stream-json --print-timeout 15m </dev/null 2>"$RUN/stderr" >"$RUN/events.ndjson"
 ```
+- **Model and effort (baton since 2026-10-29: the strongest model, reliability over cost):** before each run baton takes the first of `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `gemini-3.8-flash` that `agy models` lists, at the highest effort listed for it as `<model>-<effort>` (`gemini-3.8-flash-high`), and passes no `--effort` for a model listed bare. After 2026-11-02 that is `--model gemini-3.8-flash --effort high`.
 - **Always `</dev/null`** (or a pipe you control). With no creds, agy waits 60 s on the controlling TTY for an OAuth code [M].
 - **cwd is the workspace.** Workspace reads and writes are auto-allowed only under cwd and `--add-dir` roots. `.agents/` customizations are found by walking up from cwd to the repo root. An untrusted `/private/tmp` workspace still loaded `.agents/agents/*.md` [M].
 - **Timeouts:** use `--print-timeout`, plus a baton-side SIGTERM then SIGKILL. agy **ignores SIGALRM**: a `perl alarm` wrapper never killed it [M]. SIGINT gives status `INTERRUPTED` and a non-zero exit.
@@ -81,27 +82,36 @@ cd "$WORKTREE" && agy -p "$PROMPT" \
 - **Pin the model** so a `/model` choice made in the TUI can't change baton runs. The default here is `Gemini 3.8 Flash (High)` from settings.
 
 ### 2.2 Read-only analysis
-Give the agent no write or shell tools, so read-only is guaranteed by its tool list rather than by the prompt. Put it in `.agents/agents/baton-reader.md` inside the worktree; `.git/info/exclude` keeps it uncommitted:
+Give the agent no write or shell tools, so read-only is guaranteed by its tool list rather than by the prompt. Put it in agy's global agents dir, `~/.gemini/config/agents/baton-reader.md`, which agy loads from any cwd, so nothing is written into the folder being read. Leave out `find_by_name` and `list_dir`: with them agy searched `/` and other users' homes (below), so name the files in the prompt instead:
 ```markdown
 ---
 name: baton-reader
 description: Read-only code analyst driven by baton.
-excludeDefaultComponents: true
-inheritCustomizations: false
+excludeDefaultComponents: false
+inheritCustomizations: true
 subagent: false
-tools: [view_file, grep_search, find_by_name, list_dir, finish]
+tools: [view_file, grep_search, finish]
 ---
 # System Prompt
 Investigate and answer. Never modify files. Call finish with the result.
 ```
-`agy -p "$Q" --agent baton-reader --model gemini-3.8-flash --effort low --output-format json --print-timeout 10m`
+`agy -p "$Q" --agent baton-reader --add-dir "$PWD" --model claude-opus-4-6-thinking --output-format json --print-timeout 10m`
+
+What baton does now (2026-10-29, agy 1.4.9):
+- Every read run, in git or not, uses the global `~/.gemini/config/agents/baton-read-worker.md` (a name distinct from the sample above) with tools `view_file, grep_search, finish`, and writes nothing into the folder or its `.git/info/exclude`. Only edit runs write `.agents/agents/baton-worker.md`, into their own worktree. Measured [M]: a run from a non-git folder outside `trustedWorkspaces` started the global agent and read the file with one `view_file` on its absolute path.
+- agy was never told its workspace, and with relative brief paths it ran `find_by_name` over `/`, `/home` and other users' home directories [M]. Baton now opens the first message with the absolute workspace root, says every brief path is relative to it, and forbids listing, searching or reading outside it. Read runs also pass `--add-dir <root>` and list the brief's `## Files` globs as up to 200 absolute paths (git's file list in a repository, else a walk from each pattern's literal leading folder that skips `.git`, `target`, `node_modules` and folders no pattern can reach, within 50,000 entries; a cut list is flagged in the prompt), so the read agent needs no `find_by_name` or `list_dir`.
+- Reads outside the root [M, 2026-10-29]: a baton read brief that asked for `/etc/hostname`, `/etc/os-release` and `~/.bashrc` read only the in-root file; the agent made no tool call on the three outside paths and refused them from the prompt. Run directly with the read agent and `--add-dir <root>` but no such prompt, agy called `view_file /etc/os-release` and headless soft-denied it (`denied_actions: [{action: read_file}]`, stderr `jetski: no output produced … "read_file" permission`), ending the turn before the other two. So agy's own permission layer blocks reads outside the workspace; a user `read_file(...)` allow rule or `allowNonWorkspaceAccess: true` would lift it, and then only the prompt remains.
+- Customizations [M, 2026-10-29, agy 1.4.10]: baton's agents set `inheritCustomizations: true` and `excludeDefaultComponents: false`, so the user's skills, rules, plugins (24 synced by `baton sync --to agy`) and hooks load and the skills are listed. Read from the stored prompt (`~/.gemini/antigravity-cli/conversations/<id>.db`, table `gen_metadata`) of two real read runs on `claude-opus-4-6-thinking`:
+  - Declared tools were exactly `view_file, grep_search, finish, manage_task` with either value of `excludeDefaultComponents`. agy adds `manage_task` itself; this morning's agents with `inheritCustomizations: false` had it too. `init.tools` still listed all 60 tools.
+  - `excludeDefaultComponents: true`: the system prompt was the agent body alone, no skills (first call 2,405 input tokens); the agent said no skills were named.
+  - `excludeDefaultComponents: false`: the prompt carried `<user_information>`, `<skills>`, `<messaging>`, `<artifacts>`, `<guidelines>` and `<communication_style>`, with the user's plugin skills (first call 10,382 input tokens; the second read 10,307 from cache). The agent named `yu-writing-taste`, the `academic-*` skills and `baton`, and `view_file` on `~/.gemini/config/plugins/baton/skills/baton/SKILL.md` was allowed in read mode. The run took 13,082 input tokens, 735 output, 20 s.
 - Do **not** rely on `--mode plan`. It only prepends `/plan`, and headless "proceeds through plan review automatically" [C], so a plan run can go on to implement.
 - With the default agent, the user's global allowlist (`command(ls)`, `command(grep)`, `command(git status|log|diff|show)`, `command(echo)`, `command(agy)` …) lets the agent run those commands without asking. It also lets it explore **outside** the workspace: an accidental run did `ls ..` and `ls ../..` [M].
 
 ### 2.3 Edits in a worktree
 ```sh
 git worktree add "$WT" -b baton/$ID && cd "$WT"
-agy -p "$TASK" --agent baton-worker --mode accept-edits --model gemini-3.8-flash --effort medium \
+agy -p "$TASK" --agent baton-worker --mode accept-edits --model claude-opus-4-6-thinking \
     --output-format stream-json --print-timeout 30m </dev/null
 ```
 - **Measured [M]:** `--mode accept-edits` with no dangerous flag created `hello.txt` through `write_to_file` and exited 0. `git status` showed `?? hello.txt`.
@@ -162,6 +172,7 @@ Actions that default to Ask, and so are soft-denied in headless: `command`, `mcp
 
 ## 3. Token levers (measured)
 
+Reference numbers only: since 2026-10-29 baton runs the strongest model with the user's customizations and agy's default prompt sections (reliability over cost, section 2.2), not these levers.
 All runs used the prompt "Reply with exactly: ok" unless stated, in throwaway git repos under the scratchpad [M].
 
 | Run | Agent | Model / effort | input tok | output (thinking) | cache_read | model s / wall s |
@@ -324,10 +335,10 @@ Built-in termination checks run after hooks.json hooks [C]. `/btw` side question
 - `@[label](path)` inlines another file; `@path` only references it.
 - **Not loaded:** `CLAUDE.md`.
 - **Budget:** 20k tokens for always-on and global rules; over-budget rules are demoted to path pointers. 24 KB per file.
-- **Keeping context small:**
-  - Lean agents with `inheritCustomizations:false` and an explicit `rules:`.
-  - Prefer `model_decision`.
-  - Don't commit huge `AGENTS.md` files into repos agy works in.
+- **Context size:**
+  - An agent with `inheritCustomizations: false` and an explicit `rules:` loads only those rules; baton's workers inherit everything instead (since 2026-10-29).
+  - `trigger: model_decision` rules cost a description until used.
+  - A huge `AGENTS.md` committed into a repo is loaded into every agy run there.
 
 ### 5.8 Converting a Claude Code plugin (tested in a fake HOME and the workspace) [M]
 - `agy plugin validate` on a Claude layout fails: *"This looks like a Claude Code plugin: `plugin install` converts it, but it doesn't load as is."*
@@ -409,11 +420,11 @@ Built-in termination checks run after hooks.json hooks [C]. `/btw` side question
    - [I] `ask` from a hook could make otherwise auto-allowed actions (edits) prompt, and therefore be soft-denied, in headless.
    - Baton should check `agy -p /hooks --output-format json` at start-up and warn. Whether `inheritCustomizations:false` skips global hooks is unknown.
 5. **The user's global allowlist** (`command(ls)`, `command(grep)`, `command(echo)`, `command(git status|log|diff|show)`, **`command(agy)`**, plus several one-off `find`/`strings` lines) lets default-agent workers run those commands without asking. That includes listing outside the workspace and **spawning nested agy**. Restrict worker tools in agent files, and consider asking the user to prune that list.
-6. **No prompt caching on short runs.** Every step re-sends the full context; caching only started once context passed about 17–18k tokens. Tool-heavy short tasks cost N × 12k with the default agent. Use lean agents and streamed sessions.
+6. **No prompt caching on short Gemini runs.** Every step re-sends the full context; on Gemini 3.8 Flash caching only started once context passed about 17–18k tokens, so tool-heavy short tasks cost N × 12k with the default agent. On `claude-opus-4-6-thinking` the second call of a 10k-token context already read 10,307 tokens from cache [M, 2026-10-29]. Streamed sessions keep fix rounds warm.
 7. **Resume through `--conversation` is slow and uncached** (728 s and 27k tokens observed by the caller). `-c` races on `last_conversations.json`. Use one stream-json process per worker instead.
 8. **Kill semantics:** `--print-timeout` expiry gives exit 0 with partial output, so check stderr and `status`. SIGALRM is ignored; use SIGTERM or SIGKILL. A stalled model stream is only cancelled after 5 minutes.
 9. **Auth is HOME-bound.** With a fake `HOME`, agy waited 60 s for an OAuth code on the TTY. Never change HOME for workers, and always redirect stdin.
-10. **Model churn:** `claude-sonnet-4-6`, `claude-opus-4-6-thinking` and `gpt-oss-120b-medium` disappear on **2026-11-02**. The 5.5 Claude models need Pro (non-trial) or Ultra, and Gemini 4 Argon needs Pro or Ultra. Pin slugs and handle exit 1 from an unknown model.
+10. **Model churn:** `claude-sonnet-4-6`, `claude-opus-4-6-thinking` and `gpt-oss-120b-medium` disappear on **2026-11-02**. The 5.5 Claude models need Pro (non-trial) or Ultra, and Gemini 4 Argon needs Pro or Ultra. Pin slugs and handle exit 1 from an unknown model; baton checks `agy models` before each run and falls back along its ordered list (2.1).
 11. **Claude Code plugins don't load as-is.** Install-time conversion silently drops agents (comma-string `tools`), leaves hooks inert (`Bash` matcher, literal `${CLAUDE_PLUGIN_ROOT}`, empty SessionStart command) and misnames converted commands (`plugin:SKILL`).
 12. **The docs are partly stale against 1.4.2:**
     - The print-timeout default is 0, not 5m.
@@ -425,7 +436,7 @@ Built-in termination checks run after hooks.json hooks [C]. `/btw` side question
 13. **Disk growth:** about 0.4–0.46 MB of SQLite plus a `brain/` dir per run, with no CLI prune.
 14. **Typo in an agent `tools:` list:** the subagent may hang [D]. Validate with `agy plugin validate`; agent files outside plugins can be validated by wrapping them in a temp plugin.
 15. **`agy plugin <sub> --help` is treated as a name:** `uninstall --help` reports success.
-16. **`init.tools` is not the effective toolset**, and the default agent's real toolset no longer includes `grep_search`, `find_by_name` or `list_dir`.
+16. **`init.tools` is not the effective toolset** (still 60 tools in 1.4.10 whatever the agent; the declared tools are in the stored prompt, section 2.2), and the default agent's real toolset no longer includes `grep_search`, `find_by_name` or `list_dir`.
 
 ---
 
