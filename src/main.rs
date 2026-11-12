@@ -824,7 +824,8 @@ fn review(home: &Path, task: &str, by: String) -> Res<i32> {
     meta.agent = by;
     // The reviewer's strongest model and highest effort, whatever the task's difficulty.
     let (model, effort) = if meta.agent == "agy" {
-        agy::choose(agy::MODELS[0], None)
+        // agy::choose(agy::MODELS[0], None)
+        agy::choose(agy::GEMINI, None) // Gemini by default (user 2026-11-12)
     } else {
         (codex::MODEL.into(), Some(codex::EFFORT.into()))
     };

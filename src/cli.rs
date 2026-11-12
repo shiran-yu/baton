@@ -223,7 +223,8 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             // Each worker's strongest model and highest effort (user 2026-10-29: reliability over cost).
             let (model, effort) = match agent.as_str() {
                 "copilot" => (crate::copilot::model(), Some("medium".into())),
-                "agy" => (crate::agy::MODELS[0].into(), None),
+                // "agy" => (crate::agy::MODELS[0].into(), None),
+                "agy" => (crate::agy::GEMINI.into(), None), // Gemini by default (user 2026-11-12); --model picks a Claude model
                 _ => (
                     crate::codex::MODEL.into(),
                     Some(crate::codex::EFFORT.into()),

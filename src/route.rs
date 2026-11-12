@@ -17,6 +17,7 @@ pub const TYPES: [&str; 8] = [
     "research",
 ];
 // 2026-11-02T00:00:00Z. The clock is an explicit routing input.
+#[allow(dead_code)] // unused while agy's Claude route is commented out (2026-11-12)
 pub const THIRD_PARTY_CUTOFF: u64 = 1_793_577_600;
 
 #[derive(Debug, Serialize)]
@@ -249,7 +250,8 @@ pub fn recommend(
     brief: &Brief,
     history: &[Entry],
     usage: &Usage,
-    now: u64,
+    // now: u64,
+    _now: u64, // only agy's Claude cutoff read it (commented out 2026-11-12)
     mode: &str,
 ) -> Routing {
     if let Some(reason) = hard_rule(class, brief) {
@@ -263,10 +265,11 @@ pub fn recommend(
     let d = class.difficulty;
     // Quota and task type pick the worker, never a weaker model or effort (user 2026-10-29).
     // agy: Claude Opus on the 3p bucket until it leaves agy, else Gemini; strongest first.
+    // agy runs Gemini by default since 2026-11-12 (user); a Claude model only through --model.
     let mut models = vec![("codex", crate::codex::MODEL, false)];
-    if now < THIRD_PARTY_CUTOFF && usage.has_third_party() {
-        models.push(("agy", crate::agy::MODELS[0], true));
-    }
+    // if now < THIRD_PARTY_CUTOFF && usage.has_third_party() {
+    //     models.push(("agy", crate::agy::MODELS[0], true));
+    // }
     models.push(("agy", crate::agy::GEMINI, false));
     if mode == "read" && d <= 2 {
         models.push(("copilot", "auto", false));
@@ -624,46 +627,71 @@ mod tests {
             "claude"
         );
     }
+    // Until 2026-11-12 routing proposed agy's Claude Opus on the 3p bucket before the cutoff:
+    // #[test]
+    // fn third_party_requires_bucket_and_stops_at_cutoff() {
+    //     let b = brief("Build it", "src/main.rs", "true");
+    //     let class = classify(&b, None, None).unwrap();
+    //     let mut u = usage();
+    //     assert_eq!(
+    //         recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit")
+    //             .candidates
+    //             .len(),
+    //         3
+    //     );
+    //     u.0["agy"]["windows"]
+    //         .as_array_mut()
+    //         .unwrap()
+    //         .push(json!({"id":"3p-weekly","used":0.0}));
+    //     let before = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
+    //     assert_eq!(before.candidates.len(), 4);
+    //     let agy = |r: &Routing, model: &str| {
+    //         r.candidates
+    //             .iter()
+    //             .find(|c| c.model.as_deref() == Some(model))
+    //             .cloned()
+    //             .unwrap()
+    //     };
+    //     let opus = agy(&before, "claude-opus-4-6-thinking");
+    //     assert!(opus.effort.is_none() && opus.skipped.is_none() && opus.score.is_some());
+    //     // agy runs its strongest eligible model, whatever the Gemini bucket holds.
+    //     let gemini = agy(&before, "gemini-3.8-flash");
+    //     assert_eq!(
+    //         gemini.skipped.as_deref(),
+    //         Some("a stronger agy model is eligible")
+    //     );
+    //     assert!(gemini.score.is_none());
+    //     u.0["agy"]["windows"][1]["used"] = json!(0.999);
+    //     let short = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
+    //     assert!(agy(&short, "gemini-3.8-flash").score.is_some());
+    //     for now in [THIRD_PARTY_CUTOFF, THIRD_PARTY_CUTOFF + 1] {
+    //         let after = recommend(&class, &b, &[], &u, now, "edit");
+    //         assert_eq!(after.candidates.len(), 3);
+    //         assert!(agy(&after, "gemini-3.8-flash").effort.is_none());
+    //     }
+    // }
+
+    // Since 2026-11-12 (user) agy is routed on Gemini only, even with a full 3p bucket before the cutoff.
     #[test]
-    fn third_party_requires_bucket_and_stops_at_cutoff() {
+    fn agy_routes_gemini_only() {
         let b = brief("Build it", "src/main.rs", "true");
         let class = classify(&b, None, None).unwrap();
         let mut u = usage();
-        assert_eq!(
-            recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit")
-                .candidates
-                .len(),
-            3
-        );
         u.0["agy"]["windows"]
             .as_array_mut()
             .unwrap()
             .push(json!({"id":"3p-weekly","used":0.0}));
-        let before = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
-        assert_eq!(before.candidates.len(), 4);
-        let agy = |r: &Routing, model: &str| {
-            r.candidates
-                .iter()
-                .find(|c| c.model.as_deref() == Some(model))
-                .cloned()
-                .unwrap()
-        };
-        let opus = agy(&before, "claude-opus-4-6-thinking");
-        assert!(opus.effort.is_none() && opus.skipped.is_none() && opus.score.is_some());
-        // agy runs its strongest eligible model, whatever the Gemini bucket holds.
-        let gemini = agy(&before, "gemini-3.8-flash");
-        assert_eq!(
-            gemini.skipped.as_deref(),
-            Some("a stronger agy model is eligible")
-        );
-        assert!(gemini.score.is_none());
-        u.0["agy"]["windows"][1]["used"] = json!(0.999);
-        let short = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
-        assert!(agy(&short, "gemini-3.8-flash").score.is_some());
-        for now in [THIRD_PARTY_CUTOFF, THIRD_PARTY_CUTOFF + 1] {
-            let after = recommend(&class, &b, &[], &u, now, "edit");
-            assert_eq!(after.candidates.len(), 3);
-            assert!(agy(&after, "gemini-3.8-flash").effort.is_none());
-        }
+        let r = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
+        assert_eq!(r.candidates.len(), 3);
+        assert!(r
+            .candidates
+            .iter()
+            .all(|c| c.model.as_deref() != Some("claude-opus-4-6-thinking")));
+        let gemini = r
+            .candidates
+            .iter()
+            .find(|c| c.model.as_deref() == Some("gemini-3.8-flash"))
+            .unwrap();
+        assert!(gemini.score.is_some() && gemini.skipped.is_none());
     }
 }

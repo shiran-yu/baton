@@ -41,6 +41,7 @@ impl Usage {
         }
     }
 
+    #[allow(dead_code)] // unused while agy's Claude route is commented out (2026-11-12)
     pub fn has_third_party(&self) -> bool {
         let source = self.source("agy");
         windows(source).iter().any(|w| name(w) == "3p-weekly")

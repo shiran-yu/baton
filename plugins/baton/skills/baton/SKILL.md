@@ -28,9 +28,10 @@ Follow the route unless you know better; say why if you override it.
 
 Every worker runs its strongest model at its highest effort, with the user's own plugins and
 skills (user, 2026-10-29: reliability over cost): Codex `gpt-6-astra` at `xhigh` with the user's
-`~/.codex/config.toml`; agy the strongest model `agy models` lists (Claude Opus 4.6 until it leaves
-agy on 2026-11-02, then Gemini 3.8 Flash at `high`). Routing picks the worker, never a weaker model
-or effort. Do not pass `--model` or `--effort` to save quota.
+`~/.codex/config.toml`; agy Gemini 3.8 Flash at the highest effort `agy models` lists (`high`), its
+default since 2026-11-12 (user): the Claude models on agy draw on the small `3p-weekly` bucket and
+run only when `--model` names one. Routing picks the worker, never a weaker model or effort. Do not
+pass `--model` or `--effort` to save quota.
 
 ## 2. Write the brief
 

@@ -605,7 +605,7 @@ fn agy_verified_worker_agent_and_exact_exclusion() {
     assert!(String::from_utf8_lossy(&changed.stdout).contains(".agents/plugins/tracked.md"));
     let task = f.task("agy");
     let args = fs::read_to_string(task.join("agy-argv.txt")).unwrap();
-    // The strongest model `agy models` lists; agy takes no --effort for it.
+    // Gemini by default (user 2026-11-12), at the highest effort `agy models` lists.
     assert_eq!(
         args.lines().collect::<Vec<_>>(),
         vec![
@@ -616,7 +616,10 @@ fn agy_verified_worker_agent_and_exact_exclusion() {
             "--agent",
             "baton-worker",
             "--model",
-            "claude-opus-4-6-thinking",
+            // "claude-opus-4-6-thinking",
+            "gemini-3.8-flash",
+            "--effort",
+            "high",
             "--mode",
             "accept-edits",
             "--json-schema",
@@ -625,8 +628,10 @@ fn agy_verified_worker_agent_and_exact_exclusion() {
             "1800s"
         ]
     );
-    assert_eq!(result["model"], "claude-opus-4-6-thinking");
-    assert_eq!(result["effort"], "");
+    // assert_eq!(result["model"], "claude-opus-4-6-thinking");
+    // assert_eq!(result["effort"], "");
+    assert_eq!(result["model"], "gemini-3.8-flash");
+    assert_eq!(result["effort"], "high");
     assert!(task.join("agy-closed").exists());
     assert_eq!(f.read("agy", "meta.json")["thread_id"], "fake-agy");
     let turns = fs::read_to_string(task.join("agy-turns.jsonl")).unwrap();
@@ -687,7 +692,8 @@ fn agy_falls_back_to_the_next_listed_model() {
         assert_eq!(json(&out)["model"], model);
     }
     // agy refuses --effort for a Claude model, so an explicit one is dropped there.
-    let out = run_agy(&f, "opus", "Write a file", "true", &["--effort", "low"]);
+    // let out = run_agy(&f, "opus", "Write a file", "true", &["--effort", "low"]);
+    let out = run_agy(&f, "opus", "Write a file", "true", &["--model", "claude-opus-4-6-thinking", "--effort", "low"]); // Opus only on request since 2026-11-12
     code(&out, 0);
     let args = fs::read_to_string(f.task("opus").join("agy-argv.txt")).unwrap();
     assert!(args.contains("--model\nclaude-opus-4-6-thinking\n") && !args.contains("--effort"));

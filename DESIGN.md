@@ -133,13 +133,14 @@ No `--ephemeral`: the rollout under `~/.codex/sessions/` carries live `token_cou
   which would hide the worktree's worker agent; and outside a trusted workspace agy soft-denies even
   reads, so `baton setup` adds `read_file(<root>/)` and `write_file(<root>/)` to agy's
   `permissions.allow`. Codex worktrees stay under `$BATON_HOME/wt/`.
-- Model and effort, chosen at run time: the first of `claude-opus-4-6-thinking`,
-  `claude-sonnet-4-6` and `gemini-3.8-flash` that `agy models` lists (free, about 3 s), at the
-  highest effort it lists for that model as `<model>-<effort>` (`gemini-3.8-flash-high`). A model
-  listed bare gets no `--effort`: agy refuses one for the Claude models ("--effort is not
-  supported for model"). Opus draws on the `3p-weekly` bucket and leaves agy on 2026-11-02, after
-  which runs fall back to Gemini 3.8 Flash at `high`. A `--model` outside that list is used as
-  given; a failed listing changes nothing.
+- Model and effort, chosen at run time: `gemini-3.8-flash` by default (user, 2026-11-12), at the
+  highest effort `agy models` lists for it as `<model>-<effort>` (`gemini-3.8-flash-high`; the
+  listing is free, about 3 s). A Claude model runs only when `--model` names it; a model from
+  `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `gemini-3.8-flash` that agy no longer lists falls
+  back to the next listed one. A model listed bare gets no `--effort`: agy refuses one for the
+  Claude models ("--effort is not supported for model"). The Claude models draw on the small
+  `3p-weekly` bucket. A `--model` outside that list is used as given; a failed listing changes
+  nothing.
 - Worker agent: `excludeDefaultComponents: false`, `inheritCustomizations: true`,
   `subagent: false`, and a YAML tool list. It inherits the user's skills, rules, plugins (24
   synced by `baton sync --to agy`) and their hooks, and agy's default prompt sections list the
@@ -255,10 +256,9 @@ Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lin
 - Hard rules: risky briefs go to the lead; D4 or no acceptance commands go to the lead; a worker
   whose remaining quota is below the task's expected cost is skipped.
 - Quota and task type pick the worker; model and effort are always that worker's best (§5),
-  whatever the difficulty (user, 2026-10-29). Codex: `gpt-6-astra` at `xhigh`. agy: Claude Opus
-  on the `3p-weekly` bucket until 2026-11-02, Gemini when that bucket is short or after the date,
-  with the effort found at run time; a weaker agy model is skipped while a stronger one is
-  eligible. Copilot keeps its own difficulty ladder.
+  whatever the difficulty (user, 2026-10-29). Codex: `gpt-6-astra` at `xhigh`. agy: Gemini 3.8
+  Flash since 2026-11-12 (user), with the effort found at run time; routing no longer proposes
+  agy's Claude models. Copilot keeps its own difficulty ladder.
 
 ## 9. Ledger
 
