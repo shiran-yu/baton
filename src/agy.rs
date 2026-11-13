@@ -41,13 +41,53 @@ pub struct Agy {
 
 // Strongest first. The Claude 4.6 models draw on the 3p-weekly bucket and leave agy on
 // 2026-11-02; Gemini 3.8 Flash stays.
-pub const MODELS: [&str; 3] = ["claude-opus-4-6-thinking", "claude-sonnet-4-6", GEMINI];
-pub const GEMINI: &str = "gemini-3.8-flash";
+// pub const MODELS: [&str; 3] = ["claude-opus-4-6-thinking", "claude-sonnet-4-6", GEMINI];
+// pub const GEMINI: &str = "gemini-3.8-flash";
+
+// Model policy (user 2026-11-13, Pro plan); route.rs and main.rs read it from here.
+// - Argon is the top tier (Claude's strongest): judgement work runs Argon while its own weekly
+//   bucket allows, else Hydrogen.
+// - Hydrogen is Sonnet's counterpart: tool work (mechanical, docs, research sweeps, D1) runs on it.
+// - Every model runs at the highest effort `agy models` lists for it (Argon high, Hydrogen xhigh
+//   today); Flash, at its highest, is the last fallback. The caller's --model and --effort win.
+pub const ARGON: &str = "gemini-4-argon";
+pub const HYDROGEN: &str = "gemini-4-hydrogen";
+pub const FLASH: &str = "gemini-3.8-flash";
+// Strongest first: a model agy does not list falls back to the next one it does.
+pub const MODELS: [&str; 3] = [ARGON, HYDROGEN, FLASH];
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-/// The model and effort of a run, checked against `agy models` (free, about 3 s).
-pub fn choose(model: &str, effort: Option<String>) -> (String, Option<String>) {
-    let listed: Vec<String> = process::capture(
+/// Tool-like work goes to Hydrogen; a review is always judgement.
+pub fn tool_work(task_type: &str, difficulty: u8) -> bool {
+    task_type != "review"
+        && (["mechanical", "docs", "research"].contains(&task_type) || difficulty <= 1)
+}
+
+/// The policy's models for a task, preferred first.
+pub fn tiers(task_type: &str, difficulty: u8) -> Vec<&'static str> {
+    if tool_work(task_type, difficulty) {
+        vec![HYDROGEN]
+    } else {
+        vec![ARGON, HYDROGEN]
+    }
+}
+
+/// Whether a `/usage` bucket meters a model. On Pro, Argon has its own weekly bucket; the other
+/// Gemini models share the Gemini group's 5 h and weekly buckets; Claude and GPT the 3p group's.
+pub fn meters(model: &str, bucket: &str) -> bool {
+    let argon = bucket.starts_with("gemini-argon");
+    if model.starts_with(ARGON) {
+        argon
+    } else if model.starts_with("claude-") || model.starts_with("gpt-") {
+        bucket.starts_with("3p-")
+    } else {
+        bucket.starts_with("gemini-") && !argon
+    }
+}
+
+// `agy models`, one slug per line.
+fn offered() -> Vec<String> {
+    process::capture(
         Command::new(process::executable("agy")).arg("models"),
         Duration::from_secs(30),
     )
@@ -57,8 +97,45 @@ pub fn choose(model: &str, effort: Option<String>) -> (String, Option<String>) {
             .map(String::from)
             .collect()
     })
-    .unwrap_or_default();
-    pick(model, effort, &listed)
+    .unwrap_or_default()
+}
+
+/// The model and effort of a run, checked against `agy models` (free, about 3 s).
+pub fn choose(model: &str, effort: Option<String>) -> (String, Option<String>) {
+    // let listed: Vec<String> = process::capture(
+    //     Command::new(process::executable("agy")).arg("models"),
+    //     Duration::from_secs(30),
+    // )
+    // .map(|out| {
+    //     out.lines()
+    //         .filter_map(|line| line.split('\t').next())
+    //         .map(String::from)
+    //         .collect()
+    // })
+    // .unwrap_or_default();
+    pick(model, effort, &offered())
+}
+
+/// The policy's first model that agy lists and `allowed` (the quota) passes, else Flash, each at
+/// its highest listed effort.
+pub fn policy(tiers: &[&str], allowed: impl Fn(&str) -> bool) -> (String, Option<String>) {
+    first(tiers, allowed, &offered())
+}
+
+// An empty list (agy models failed) leaves only the quota to decide.
+fn first(
+    tiers: &[&str],
+    allowed: impl Fn(&str) -> bool,
+    listed: &[String],
+) -> (String, Option<String>) {
+    let offered = |model: &str| {
+        listed.is_empty() || listed.iter().any(|s| s == model) || !efforts(listed, model).is_empty()
+    };
+    let model = tiers
+        .iter()
+        .find(|model| offered(model) && allowed(model))
+        .unwrap_or(&FLASH);
+    pick(model, None, listed)
 }
 
 // A model from MODELS falls back to the next one agy lists; any other model is kept. The effort
@@ -109,9 +186,16 @@ const WALK: usize = 300;
 // agy is never told its workspace otherwise and resolves relative brief paths by searching from /.
 fn preamble(meta: &Meta, files: &[String]) -> String {
     let root = Path::new(&meta.worktree);
+    // let mut text = format!(
+    //     "Workspace root: {root}\nEvery path in this brief is relative to {root}. Never list, search or read anything outside it.\n",
+    //     root = meta.worktree
+    // );
+    // Skills live in the installed plugins; without the exception a literal model (Hydrogen
+    // medium, 2026-11-13) refused to open them.
     let mut text = format!(
-        "Workspace root: {root}\nEvery path in this brief is relative to {root}. Never list, search or read anything outside it.\n",
-        root = meta.worktree
+        "Workspace root: {root}\nEvery path in this brief is relative to {root}. Never list, search or read anything outside it, except a skill's SKILL.md and the files it links to under {plugins}.\n",
+        root = meta.worktree,
+        plugins = usage::user_home().join(".gemini/config/plugins").display()
     );
     // Read agents have no listing or file search tools, so name the files explicitly.
     if meta.mode == "read" {
@@ -300,7 +384,8 @@ fn agent(meta: &Meta) -> Res<&'static str> {
         let path = dir.join("baton-read-worker.md");
         // The user's skills, rules, plugins and hooks load, and agy's default prompt sections list
         // the skills; agy still declares only these tools plus its manage_task (measured 2026-10-29).
-        let content = format!("---\nname: baton-read-worker\ndescription: Read-only baton worker\nexcludeDefaultComponents: false\ninheritCustomizations: true\nsubagent: false\ntools:\n{tools}---\nRead only inside the workspace root named in the first message. Never run commands. Call finish with the result object.\n");
+        // let content = format!("---\nname: baton-read-worker\ndescription: Read-only baton worker\nexcludeDefaultComponents: false\ninheritCustomizations: true\nsubagent: false\ntools:\n{tools}---\nRead only inside the workspace root named in the first message. Never run commands. Call finish with the result object.\n");
+        let content = format!("---\nname: baton-read-worker\ndescription: Read-only baton worker\nexcludeDefaultComponents: false\ninheritCustomizations: true\nsubagent: false\ntools:\n{tools}---\nRead only inside the workspace root named in the first message, and the skill files it allows. Never run commands. Call finish with the result object.\n");
         if fs::read_to_string(&path).ok().as_deref() != Some(content.as_str()) {
             fs::create_dir_all(&dir)?;
             // Rename so a concurrent agy never reads a half-written agent.
@@ -701,12 +786,24 @@ impl Worker for Agy {
 }
 
 fn tokens(usage: &Value) -> Tokens {
+    let input = usage["input_tokens"].as_u64().unwrap_or(0);
+    // agy 1.5.7 counts thinking inside output_tokens (total = input + output, 2026-11-13), so
+    // output + thinking counted it twice; total - input holds under either convention.
+    let output = match usage["total_tokens"].as_u64() {
+        Some(total) if total >= input => total - input,
+        _ => {
+            usage["output_tokens"].as_u64().unwrap_or(0)
+                + usage["thinking_tokens"].as_u64().unwrap_or(0)
+        }
+    };
     Tokens {
         premium_requests: None,
-        input: usage["input_tokens"].as_u64().unwrap_or(0),
+        // input: usage["input_tokens"].as_u64().unwrap_or(0),
+        input,
         cached: usage["cache_read_tokens"].as_u64().unwrap_or(0),
-        output: usage["output_tokens"].as_u64().unwrap_or(0)
-            + usage["thinking_tokens"].as_u64().unwrap_or(0),
+        // output: usage["output_tokens"].as_u64().unwrap_or(0)
+        //     + usage["thinking_tokens"].as_u64().unwrap_or(0),
+        output,
     }
 }
 
@@ -743,26 +840,91 @@ fn exhausted(message: &str) -> (Outcome, Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Until 2026-11-13 the list was Claude Opus 4.6, Claude Sonnet 4.6, Gemini 3.8 Flash:
+    // #[test]
+    // fn strongest_listed_model_and_its_highest_effort() {
+    //     let list = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+    //     // `agy models` on 2026-10-29.
+    //     let today = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-sonnet-4-6 claude-opus-4-6-thinking gpt-oss-120b-medium");
+    //     let after = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low");
+    //     let opus = MODELS[0].to_string();
+    //     let gemini = (GEMINI.to_string(), Some("high".to_string()));
+    //     assert_eq!(pick(MODELS[0], None, &today), (opus.clone(), None));
+    //     // agy refuses --effort for a model listed bare.
+    //     assert_eq!(pick(MODELS[0], Some("low".into()), &today), (opus, None));
+    //     assert_eq!(pick(MODELS[0], None, &after), gemini);
+    //     assert_eq!(pick(GEMINI, None, &today), gemini);
+    //     assert_eq!(
+    //         pick(GEMINI, Some("low".into()), &after),
+    //         (GEMINI.into(), Some("low".into()))
+    //     );
+    //     // A model outside baton's list is kept; an empty list changes nothing.
+    //     assert_eq!(pick("custom", None, &today), ("custom".into(), None));
+    //     assert_eq!(pick(MODELS[0], None, &[]), (MODELS[0].into(), None));
+    // }
+
+    fn list(s: &str) -> Vec<String> {
+        s.split(' ').map(String::from).collect()
+    }
+    // `agy models` on 2026-11-13 (Pro plan).
+    const PRO: &str = "gemini-4-argon-medium gemini-4-argon-high gemini-4-argon-low gemini-4-hydrogen-high gemini-4-hydrogen-xhigh gemini-4-hydrogen-medium gemini-4-hydrogen-low gemini-pro-orchestrator-g1-pro gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-opus-5-5-low claude-opus-5-5-medium claude-opus-5-5-high claude-sonnet-5-5-low claude-sonnet-5-5-medium claude-sonnet-5-5-high gpt-oss-120b-medium";
+
     #[test]
-    fn strongest_listed_model_and_its_highest_effort() {
-        let list = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
-        // `agy models` on 2026-10-29.
-        let today = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-sonnet-4-6 claude-opus-4-6-thinking gpt-oss-120b-medium");
-        let after = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low");
-        let opus = MODELS[0].to_string();
-        let gemini = (GEMINI.to_string(), Some("high".to_string()));
-        assert_eq!(pick(MODELS[0], None, &today), (opus.clone(), None));
-        // agy refuses --effort for a model listed bare.
-        assert_eq!(pick(MODELS[0], Some("low".into()), &today), (opus, None));
-        assert_eq!(pick(MODELS[0], None, &after), gemini);
-        assert_eq!(pick(GEMINI, None, &today), gemini);
-        assert_eq!(
-            pick(GEMINI, Some("low".into()), &after),
-            (GEMINI.into(), Some("low".into()))
-        );
-        // A model outside baton's list is kept; an empty list changes nothing.
-        assert_eq!(pick("custom", None, &today), ("custom".into(), None));
-        assert_eq!(pick(MODELS[0], None, &[]), (MODELS[0].into(), None));
+    fn explicit_model_falls_back_at_its_highest_listed_effort() {
+        let pro = list(PRO);
+        let flash = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low");
+        let some = |m: &str, e: &str| (m.to_string(), Some(e.to_string()));
+        assert_eq!(pick(ARGON, None, &pro), some(ARGON, "high"));
+        assert_eq!(pick(HYDROGEN, None, &pro), some(HYDROGEN, "xhigh"));
+        // An argon-xhigh listed later is picked up; the caller's effort wins.
+        let later = list(&format!("{PRO} gemini-4-argon-xhigh"));
+        assert_eq!(pick(ARGON, None, &later), some(ARGON, "xhigh"));
+        assert_eq!(pick(HYDROGEN, Some("medium".into()), &pro), some(HYDROGEN, "medium"));
+        assert_eq!(pick("claude-opus-5-5", None, &pro), some("claude-opus-5-5", "high"));
+        // A model agy no longer lists falls back along MODELS, keeping the caller's effort.
+        assert_eq!(pick(ARGON, None, &flash), some(FLASH, "high"));
+        assert_eq!(pick(ARGON, Some("low".into()), &flash), some(FLASH, "low"));
+        // A model outside baton's list is kept; a bare one gets no effort; an empty list changes nothing.
+        assert_eq!(pick("custom", None, &pro), ("custom".into(), None));
+        assert_eq!(pick("gpt-oss-120b-medium", Some("low".into()), &pro), ("gpt-oss-120b-medium".into(), None));
+        assert_eq!(pick(ARGON, None, &[]), (ARGON.into(), None));
+    }
+
+    #[test]
+    fn thinking_is_counted_once() {
+        // A result usage of agy 1.5.7 (Argon, 2026-11-13).
+        let t = tokens(&json!({"input_tokens":25108,"output_tokens":3273,"thinking_tokens":2434,"cache_read_tokens":10205,"total_tokens":28381}));
+        assert_eq!((t.input, t.cached, t.output), (25108, 10205, 3273));
+        // Without a total, thinking is added as before.
+        let t = tokens(&json!({"input_tokens":100,"output_tokens":10,"thinking_tokens":3}));
+        assert_eq!(t.output, 13);
+    }
+
+    #[test]
+    fn policy_tiers_quota_and_last_fallback() {
+        let pro = list(PRO);
+        let some = |m: &str, e: &str| (m.to_string(), Some(e.to_string()));
+        let all = |_: &str| true;
+        let judgement = tiers("implement", 2);
+        assert_eq!(first(&judgement, all, &pro), some(ARGON, "high"));
+        assert_eq!(first(&tiers("review", 1), all, &pro), some(ARGON, "high"));
+        // Argon used up: Hydrogen stands in, at its highest effort.
+        assert_eq!(first(&judgement, |m: &str| m != ARGON, &pro), some(HYDROGEN, "xhigh"));
+        for (kind, d) in [("mechanical", 1), ("docs", 1), ("research", 2), ("bugfix", 1)] {
+            assert_eq!(first(&tiers(kind, d), all, &pro), some(HYDROGEN, "xhigh"), "{kind}");
+        }
+        // Neither listed, or no quota for either: Flash at its highest.
+        let flash = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low");
+        assert_eq!(first(&judgement, all, &flash), some(FLASH, "high"));
+        assert_eq!(first(&judgement, |_: &str| false, &pro), some(FLASH, "high"));
+        // agy models failed: the quota alone decides, and agy picks the effort.
+        assert_eq!(first(&judgement, all, &[]), (ARGON.to_string(), None));
+        assert!(meters(ARGON, "gemini-argon-wtu-weekly") && !meters(ARGON, "gemini-weekly"));
+        for bucket in ["gemini-weekly", "gemini-5h"] {
+            assert!(meters(HYDROGEN, bucket) && meters(FLASH, bucket) && !meters(ARGON, bucket));
+        }
+        assert!(meters(HYDROGEN, "gemini-weekly") && !meters(HYDROGEN, "gemini-argon-wtu-weekly"));
+        assert!(meters("claude-opus-5-5", "3p-5h") && !meters("claude-opus-5-5", "gemini-5h"));
     }
 
     #[test]

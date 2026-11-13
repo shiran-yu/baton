@@ -138,7 +138,9 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
                 } else if host == "copilot" {
                     copilot.sync(name, market, &marketplaces, options.dry_run)
                 } else {
-                    agy(home, name, entry, options.dry_run)
+                    // agy(home, name, entry, options.dry_run)
+                    let skills = skill_paths(&marketplaces, market, name, &entry.path);
+                    agy(home, name, entry, &skills, options.dry_run)
                 }
             } else {
                 Err(Error::new(1, "no installation entry"))
@@ -482,7 +484,52 @@ impl Copilot {
     }
 }
 
-fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> {
+// Bump when the staged layout changes: every plugin is then re-staged on the next sync.
+const CONVERTER: u64 = 2;
+// A referenced plugin-root entry larger than this stays behind (mo-academic-taste's corpus).
+const RESOURCE_CAP: u64 = 2 << 20;
+// agy's limit on a SKILL.md body.
+const SKILL_LIMIT: u64 = 24 * 1024;
+
+/// The skill folders a Claude marketplace entry or plugin manifest names, relative to the plugin.
+fn skill_paths(
+    markets: &BTreeMap<String, Marketplace>,
+    market: &str,
+    name: &str,
+    source: &Path,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut add = |value: &Value| match value {
+        Value::String(path) => found.push(path.clone()),
+        Value::Array(list) => {
+            found.extend(list.iter().filter_map(Value::as_str).map(String::from))
+        }
+        _ => {}
+    };
+    if let Some(m) = markets.get(market) {
+        let catalog = paths::read_json::<Value>(&m.location.join(".claude-plugin/marketplace.json"));
+        if let Some(entry) = catalog.ok().and_then(|c| {
+            c["plugins"]
+                .as_array()
+                .and_then(|list| list.iter().find(|p| p["name"] == name).cloned())
+        }) {
+            add(&entry["skills"]);
+        }
+    }
+    if let Ok(manifest) = paths::read_json::<Value>(&source.join(".claude-plugin/plugin.json")) {
+        add(&manifest["skills"]);
+    }
+    found
+}
+
+// fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> {
+fn agy(
+    home: &Path,
+    name: &str,
+    entry: &Installation,
+    skills: &[String],
+    dry: bool,
+) -> Res<String> {
     if name.is_empty()
         || !name
             .bytes()
@@ -498,6 +545,7 @@ fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> 
         if previous["version"] == entry.version
             && previous["source"] == source.to_string_lossy().as_ref()
             && previous["installed"] == true
+            && previous["converter"] == CONVERTER
         {
             return Ok("up to date".into());
         }
@@ -518,7 +566,8 @@ fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> 
         }
     }
     fs::create_dir_all(&dest)?;
-    build_agy(name, &entry.version, &source, &dest)?;
+    // build_agy(name, &entry.version, &source, &dest)?;
+    let notes = build_agy(name, &entry.version, &source, &dest, skills)?;
     let validation = invoke("agy", &["plugin", "validate", "--json", &dir])?;
     if let Ok(value) = serde_json::from_str::<Value>(&validation) {
         if value["valid"] == false
@@ -534,9 +583,15 @@ fn agy(home: &Path, name: &str, entry: &Installation, dry: bool) -> Res<String> 
     invoke("agy", &["plugin", "install", &dir])?;
     paths::write_json(
         &marker,
-        &json!({"version":entry.version, "source":source, "installed":true}),
+        // &json!({"version":entry.version, "source":source, "installed":true}),
+        &json!({"version":entry.version, "source":source, "installed":true, "converter":CONVERTER}),
     )?;
-    Ok("installed".into())
+    // Ok("installed".into())
+    Ok(if notes.is_empty() {
+        "installed".into()
+    } else {
+        format!("installed ({})", notes.join("; "))
+    })
 }
 
 fn copy_tree(source: &Path, dest: &Path) -> Res<()> {
@@ -546,6 +601,9 @@ fn copy_tree(source: &Path, dest: &Path) -> Res<()> {
     fs::create_dir_all(dest)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
+        if SKIPPED.iter().any(|s| entry.file_name() == *s) {
+            continue;
+        }
         let target = dest.join(entry.file_name());
         let kind = entry.file_type()?;
         if kind.is_symlink() {
@@ -572,7 +630,17 @@ fn markdown_files(dir: &Path) -> Res<Vec<PathBuf>> {
     files.sort();
     Ok(files)
 }
-fn build_agy(name: &str, version: &str, source: &Path, dest: &Path) -> Res<()> {
+// Never copied into a staged plugin.
+const SKIPPED: [&str; 3] = [".git", "node_modules", "__pycache__"];
+
+// fn build_agy(name: &str, version: &str, source: &Path, dest: &Path) -> Res<()> {
+fn build_agy(
+    name: &str,
+    version: &str,
+    source: &Path,
+    dest: &Path,
+    skills: &[String],
+) -> Res<Vec<String>> {
     let manifest_path = source.join(".claude-plugin/plugin.json");
     let manifest: Value = if manifest_path.is_file() {
         paths::read_json(&manifest_path)?
@@ -583,7 +651,8 @@ fn build_agy(name: &str, version: &str, source: &Path, dest: &Path) -> Res<()> {
         &dest.join("plugin.json"),
         &json!({"name":name,"description":manifest["description"].as_str().unwrap_or(""),"version":version}),
     )?;
-    copy_tree(&source.join("skills"), &dest.join("skills"))?;
+    // copy_tree(&source.join("skills"), &dest.join("skills"))?;
+    let notes = stage_skills(name, source, dest, skills)?;
     copy_tree(&source.join("bin"), &dest.join("bin"))?;
     for path in markdown_files(&source.join("commands"))? {
         let cmd = path.file_stem().unwrap().to_string_lossy();
@@ -636,8 +705,253 @@ fn build_agy(name: &str, version: &str, source: &Path, dest: &Path) -> Res<()> {
             &convert_hooks(name, &value, source)?,
         )?;
     }
-    Ok(())
+    // Ok(())
+    Ok(notes)
 }
+
+// Stage each skill Claude Code loads from the plugin, as its Claude-native SKILL.md with every
+// plugin file it refers to copied beside it. agy reads only inside the installed plugin
+// (~/.gemini/config/plugins/<name>/): a read of the Claude install path is soft-denied in
+// headless runs, and `agy plugin install` refuses a symlink leaving the plugin (agy 1.5.7).
+// - skills/<s>/SKILL.md, or the SKILL.md its adapter shim points at (`../../SKILL.md`);
+// - the folders the marketplace entry or plugin manifest lists under `skills`;
+// - else a root SKILL.md, as skill <name>.
+// A root SKILL.md's plugin files go beside it in skills/<s>/; a skill folder's `../../X` and
+// `${CLAUDE_PLUGIN_ROOT}/X` go to the staged plugin root, and the variable becomes its install path.
+fn stage_skills(name: &str, source: &Path, dest: &Path, extra: &[String]) -> Res<Vec<String>> {
+    let mut skills: Vec<(String, PathBuf)> = Vec::new();
+    let mut dirs: Vec<PathBuf> = fs::read_dir(source.join("skills"))
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    dirs.sort();
+    for dir in dirs {
+        let (Ok(text), Some(skill)) = (
+            fs::read_to_string(dir.join("SKILL.md")),
+            dir.file_name().and_then(|n| n.to_str()).map(String::from),
+        ) else {
+            continue;
+        };
+        let target = shim_target(&text, source).unwrap_or(dir);
+        skills.push((skill, target));
+    }
+    for path in extra {
+        let path = path.trim_start_matches("./").trim_end_matches('/');
+        if path.split('/').any(|part| part == "..") {
+            continue;
+        }
+        let dir = source.join(path);
+        let skill = match dir.file_name().and_then(|n| n.to_str()) {
+            Some(skill) if !path.is_empty() => skill.to_string(),
+            _ => name.to_string(),
+        };
+        if dir.join("SKILL.md").is_file() {
+            skills.push((skill, dir));
+        }
+    }
+    if skills.is_empty() && source.join("SKILL.md").is_file() {
+        skills.push((name.into(), source.into()));
+    }
+    let installed = crate::usage::user_home()
+        .join(".gemini/config/plugins")
+        .join(name);
+    let (mut notes, mut staged): (Vec<String>, Vec<(String, PathBuf)>) = (Vec::new(), Vec::new());
+    for (skill, dir) in skills {
+        if staged.iter().any(|(s, d)| *s == skill || *d == dir)
+            || !skill
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            || skill.starts_with('.')
+        {
+            continue;
+        }
+        staged.push((skill.clone(), dir.clone()));
+        let out = dest.join("skills").join(&skill);
+        let root = dir == source;
+        if root {
+            fs::create_dir_all(&out)?;
+            let text = fs::read_to_string(dir.join("SKILL.md"))?;
+            // agy wants the skill's name to match its folder.
+            fs::write(out.join("SKILL.md"), frontmatter(&text, Some(&skill), false))?;
+        } else {
+            copy_tree(&dir, &out)?;
+        }
+        // Where the plugin root's files go, and where agy will find them once installed.
+        let (image, image_installed) = if root {
+            (out.clone(), installed.join("skills").join(&skill))
+        } else {
+            (dest.to_path_buf(), installed.clone())
+        };
+        let mut text = String::new();
+        for file in markdown_under(&out) {
+            text.push_str(&fs::read_to_string(file).unwrap_or_default());
+            text.push('\n');
+        }
+        let (copy, left) = referenced(source, &text, root)?;
+        let mut rewritten = vec![out.clone()];
+        for entry in copy {
+            let target = image.join(&entry);
+            if target.symlink_metadata().is_ok() {
+                continue;
+            }
+            if source.join(&entry).is_dir() {
+                copy_tree(&source.join(&entry), &target)?;
+            } else {
+                fs::copy(source.join(&entry), &target)?;
+            }
+            rewritten.push(target);
+        }
+        for (entry, size) in left {
+            notes.push(format!(
+                "{skill}: left out {entry}, {:.1} MB",
+                size as f64 / 1_048_576.0
+            ));
+        }
+        for folder in rewritten {
+            for file in markdown_under(&folder) {
+                let text = fs::read_to_string(&file)?;
+                if text.contains("CLAUDE_PLUGIN_ROOT") {
+                    let path = image_installed.to_string_lossy();
+                    fs::write(
+                        &file,
+                        text.replace("${CLAUDE_PLUGIN_ROOT}", &path)
+                            .replace("$CLAUDE_PLUGIN_ROOT", &path),
+                    )?;
+                }
+            }
+        }
+        let bytes = fs::metadata(out.join("SKILL.md")).map_or(0, |m| m.len());
+        if bytes > SKILL_LIMIT {
+            notes.push(format!("{skill}: SKILL.md is {bytes} bytes, over agy's 24 KB"));
+        }
+    }
+    Ok(notes)
+}
+
+// An adapter shim (skills/<s>/SKILL.md deferring to `../../SKILL.md` or `../../<dir>/SKILL.md`)
+// gives the folder of the Claude-native SKILL.md it points at.
+fn shim_target(text: &str, source: &Path) -> Option<PathBuf> {
+    text.match_indices("../../").find_map(|(i, _)| {
+        let rest = &text[i + "../../".len()..];
+        let middle = &rest[..rest.find("SKILL.md")?];
+        let folder = middle.strip_suffix('/').unwrap_or(middle);
+        let plain = folder.is_empty()
+            || (middle.ends_with('/')
+                && !folder.starts_with('.')
+                && folder
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)));
+        let dir = source.join(folder);
+        (plain && dir.join("SKILL.md").is_file()).then_some(dir)
+    })
+}
+
+// Whether text names the plugin-root entry as a path: after `../../` or `${CLAUDE_PLUGIN_ROOT}/`,
+// or, for a root SKILL.md (`bare`), standing on its own (`references/x.md`, `./scripts/`).
+fn names(text: &str, entry: &str, dir: bool, bare: bool) -> bool {
+    let path = |c: char| c.is_alphanumeric() || "_-./".contains(c);
+    let needle = if dir {
+        format!("{entry}/")
+    } else {
+        entry.to_string()
+    };
+    text.match_indices(&needle).any(|(i, _)| {
+        let (before, after) = (&text[..i], &text[i + needle.len()..]);
+        (dir || !after.starts_with(|c: char| c.is_alphanumeric() || "_-".contains(c)))
+            && (["../../", "CLAUDE_PLUGIN_ROOT}/", "CLAUDE_PLUGIN_ROOT/"]
+                .iter()
+                .any(|p| before.ends_with(p))
+                || bare && !before.strip_suffix("./").unwrap_or(before).ends_with(path))
+    })
+}
+
+// The plugin-root entries a skill's Markdown refers to, followed through the Markdown they hold;
+// an entry over RESOURCE_CAP is returned apart with its size and not followed.
+type Referenced = (Vec<String>, Vec<(String, u64)>);
+fn referenced(source: &Path, text: &str, bare: bool) -> Res<Referenced> {
+    let mut entries: Vec<(String, bool)> = fs::read_dir(source)?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let reserved = [
+                "skills",
+                "SKILL.md",
+                "plugin.json",
+                "hooks.json",
+                "mcp_config.json",
+            ];
+            (!name.starts_with('.')
+                && !reserved.contains(&name.as_str())
+                && !SKIPPED.contains(&name.as_str()))
+            .then(|| (name, e.path().is_dir()))
+        })
+        .collect();
+    entries.sort();
+    let (mut copy, mut left): Referenced = (Vec::new(), Vec::new());
+    let mut texts = vec![text.to_string()];
+    while let Some(text) = texts.pop() {
+        for (entry, dir) in &entries {
+            if copy.contains(entry)
+                || left.iter().any(|(e, _)| e == entry)
+                || !names(&text, entry, *dir, bare)
+            {
+                continue;
+            }
+            let size = size(&source.join(entry));
+            if size > RESOURCE_CAP {
+                left.push((entry.clone(), size));
+                continue;
+            }
+            copy.push(entry.clone());
+            for file in markdown_under(&source.join(entry)) {
+                texts.push(fs::read_to_string(file).unwrap_or_default());
+            }
+        }
+    }
+    copy.sort();
+    Ok((copy, left))
+}
+fn size(path: &Path) -> u64 {
+    let Ok(meta) = path.symlink_metadata() else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| !SKIPPED.iter().any(|s| e.file_name() == *s))
+                .map(|e| size(&e.path()))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+// Markdown files at or under path (a file counts if it is Markdown), skipping SKIPPED folders.
+fn markdown_under(path: &Path) -> Vec<PathBuf> {
+    let Ok(meta) = path.symlink_metadata() else {
+        return Vec::new();
+    };
+    if !meta.is_dir() {
+        return if path.extension().is_some_and(|e| e == "md") {
+            vec![path.into()]
+        } else {
+            Vec::new()
+        };
+    }
+    let mut files: Vec<PathBuf> = fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| !SKIPPED.iter().any(|s| e.file_name() == *s))
+                .flat_map(|e| markdown_under(&e.path()))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
 fn replace_root(value: &mut Value, root: &str) {
     match value {
         Value::String(s) => {

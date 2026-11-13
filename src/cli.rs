@@ -224,7 +224,8 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
             let (model, effort) = match agent.as_str() {
                 "copilot" => (crate::copilot::model(), Some("medium".into())),
                 // "agy" => (crate::agy::MODELS[0].into(), None),
-                "agy" => (crate::agy::GEMINI.into(), None), // Gemini by default (user 2026-11-12); --model picks a Claude model
+                // "agy" => (crate::agy::GEMINI.into(), None), // Gemini by default (user 2026-11-12); --model picks a Claude model
+                "agy" => (String::new(), None), // no --model: start() applies agy's model policy (agy.rs)
                 _ => (
                     crate::codex::MODEL.into(),
                     Some(crate::codex::EFFORT.into()),
@@ -293,11 +294,16 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                 if !["low", "medium", "high", "xhigh"].contains(&effort.as_str()) {
                     return Err(Error::usage("invalid --effort"));
                 }
-                if run.agent == "agy" && effort == "xhigh" {
-                    return Err(Error::usage("agy effort must be low, medium or high"));
-                }
+                // Gemini 4 Hydrogen lists xhigh (2026-11-13); agy refuses a level a model lacks.
+                // if run.agent == "agy" && effort == "xhigh" {
+                //     return Err(Error::usage("agy effort must be low, medium or high"));
+                // }
             }
-            if run.model.is_empty() || run.base.is_empty() || run.base.starts_with('-') {
+            // if run.model.is_empty() || run.base.is_empty() || run.base.starts_with('-') {
+            if (run.model.is_empty() && run.agent != "agy")
+                || run.base.is_empty()
+                || run.base.starts_with('-')
+            {
                 return Err(Error::usage("invalid model or base ref"));
             }
             Ok(Cli::Run(run))

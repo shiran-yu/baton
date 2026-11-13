@@ -333,29 +333,99 @@ pub fn parse_agy(v: &Value, now: u64) -> Res<Source> {
         agent: "agy".into(),
         ..Source::default()
     };
-    for group in v["command"]["data"]["groups"]
+    // for group in v["command"]["data"]["groups"]
+    //     .as_array()
+    //     .ok_or_else(invalid)?
+    // {
+    //     for bucket in group["buckets"].as_array().ok_or_else(invalid)? {
+    //         let id = bucket["id"].as_str().ok_or_else(invalid)?;
+    //         if bucket["window"] != "weekly" {
+    //             return Err(invalid());
+    //         }
+    //         source.windows.push(window(
+    //             "agy",
+    //             id,
+    //             1.0 - number(&bucket["remaining_fraction"])?,
+    //             utc_epoch(bucket["reset_time"].as_str().ok_or_else(invalid)?)?,
+    //             604800,
+    //             now,
+    //         )?);
+    //     }
+    // }
+    // Pro (2026-11-13): a weekly and a 5 h bucket per group plus an Argon group. Key on `window`;
+    // a bucket that cannot be read is skipped, never the whole source.
+    let groups = v["command"]["data"]["groups"]
         .as_array()
-        .ok_or_else(invalid)?
+        .ok_or_else(invalid)?;
+    for bucket in groups
+        .iter()
+        .filter_map(|g| g["buckets"].as_array())
+        .flatten()
     {
-        for bucket in group["buckets"].as_array().ok_or_else(invalid)? {
-            let id = bucket["id"].as_str().ok_or_else(invalid)?;
-            if bucket["window"] != "weekly" {
-                return Err(invalid());
-            }
-            source.windows.push(window(
-                "agy",
-                id,
-                1.0 - number(&bucket["remaining_fraction"])?,
-                utc_epoch(bucket["reset_time"].as_str().ok_or_else(invalid)?)?,
-                604800,
-                now,
-            )?);
-        }
+        let (Some(id), Some(secs), Ok(left), Some(Ok(reset))) = (
+            bucket["id"].as_str(),
+            seconds(&bucket["window"]),
+            number(&bucket["remaining_fraction"]),
+            bucket["reset_time"].as_str().map(utc_epoch),
+        ) else {
+            continue;
+        };
+        source
+            .windows
+            .push(window("agy", id, 1.0 - left, reset, secs, now)?);
     }
     if source.windows.is_empty() {
         return Err(invalid());
     }
+    // Argon first, then the Gemini group's 5 h and weekly, then the rest.
+    source
+        .windows
+        .sort_by_key(|w| (agy_group(&w.window).0, w.window_secs));
     Ok(source)
+}
+// A bucket's `window`: "weekly", "daily", or a count with m, h or d ("5h").
+fn seconds(window: &Value) -> Option<u64> {
+    let text = window.as_str().filter(|s| s.is_ascii() && s.len() > 1)?;
+    match text {
+        "weekly" => Some(604800),
+        "daily" => Some(86400),
+        _ => {
+            let (count, unit) = text.split_at(text.len() - 1);
+            let unit = match unit {
+                "m" => 60,
+                "h" => 3600,
+                "d" => 86400,
+                _ => return None,
+            };
+            count
+                .parse::<u64>()
+                .ok()?
+                .checked_mul(unit)
+                .filter(|s| *s > 0)
+        }
+    }
+}
+// An agy bucket's sort rank and group label, from its id.
+fn agy_group(id: &str) -> (u8, &str) {
+    if id.starts_with("gemini-argon") {
+        (0, "argon")
+    } else if id.starts_with("gemini-") {
+        (1, "gemini")
+    } else if id.starts_with("3p-") {
+        (2, "claude+gpt")
+    } else {
+        (3, id)
+    }
+}
+/// An agy bucket's label: its group, then 5h or wk (`argon wk`, `gemini 5h`).
+pub fn agy_label(w: &Window) -> String {
+    let (rank, group) = agy_group(&w.window);
+    match (rank, w.window_secs) {
+        (3, _) => w.window.clone(),
+        (_, 18000) => format!("{group} 5h"),
+        (_, 604800) => format!("{group} wk"),
+        _ => w.window.clone(),
+    }
 }
 // Gregorian civil date conversion; accepts RFC 3339 UTC with optional fractional seconds.
 fn utc_epoch(s: &str) -> Res<u64> {
@@ -580,6 +650,11 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
         // supported cache layouts, even when the five-minute usage cache expires.
         let previous = crate::quota::Usage::cached(home);
         for current in &mut agents {
+            // agy's /usage is free and per bucket: a live read replaces a sticky mark, so a run that
+            // used up Argon never blocks Hydrogen past the next read.
+            if current.agent == "agy" && current.error.is_none() {
+                continue;
+            }
             let source = previous.source(&current.agent);
             if source["exhausted"] == true {
                 *current = serde_json::from_value(source.clone()).unwrap_or_else(|_| Source {
@@ -632,18 +707,23 @@ pub fn table(snapshot: &Snapshot) -> String {
             ));
         }
         for w in s.windows.iter().filter(|_| s.agent != "copilot") {
+            // let (name, amount, verb) = if s.agent == "agy" {
+            //     (
+            //         match w.window.as_str() {
+            //             "gemini-weekly" => "gemini",
+            //             "3p-weekly" => "claude+gpt",
+            //             other => other,
+            //         },
+            //         1.0 - w.used,
+            //         "left",
+            //     )
+            // } else {
+            //     (w.window.as_str(), w.used, "used")
+            // };
             let (name, amount, verb) = if s.agent == "agy" {
-                (
-                    match w.window.as_str() {
-                        "gemini-weekly" => "gemini",
-                        "3p-weekly" => "claude+gpt",
-                        other => other,
-                    },
-                    1.0 - w.used,
-                    "left",
-                )
+                (agy_label(w), 1.0 - w.used, "left")
             } else {
-                (w.window.as_str(), w.used, "used")
+                (w.window.clone(), w.used, "used")
             };
             out.push_str(&format!(
                 "  {name} {} {verb} (resets {})",
@@ -689,6 +769,39 @@ mod tests {
             assert!(utc_epoch(s).is_err(), "{s}");
         }
     }
+    #[test]
+    fn agy_pro_buckets_parse_generically() {
+        let mut v: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/usage/agy-usage-pro.json"))
+                .unwrap();
+        let now = utc_epoch("2026-11-13T04:00:00Z").unwrap();
+        let s = parse_agy(&v, now).unwrap();
+        let labels: Vec<_> = s.windows.iter().map(agy_label).collect();
+        assert_eq!(
+            labels,
+            ["argon wk", "gemini 5h", "gemini wk", "claude+gpt 5h", "claude+gpt wk"]
+        );
+        assert_eq!(s.windows[0].window, "gemini-argon-wtu-weekly");
+        assert!((s.windows[1].used - 0.6).abs() < 1e-12);
+        assert_eq!(s.windows[1].window_secs, 18000);
+        // An unknown window or a broken bucket is skipped, never fatal.
+        let groups = &mut v["command"]["data"]["groups"];
+        groups[0]["buckets"][0]["window"] = json!("fortnightly");
+        groups[1]["buckets"][0]["remaining_fraction"] = json!("n/a");
+        groups[2]["buckets"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"gemini-argon-daily","window":"1d","remaining_fraction":0.5,"reset_time":"2026-11-14T00:00:00Z"}));
+        let s = parse_agy(&v, now).unwrap();
+        let ids: Vec<_> = s.windows.iter().map(|w| w.window.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["gemini-argon-daily", "gemini-argon-wtu-weekly", "gemini-5h", "3p-5h"]
+        );
+        v["command"]["data"]["groups"] = json!([]);
+        assert!(parse_agy(&v, now).is_err());
+    }
+
     #[test]
     fn pace_clamps_elapsed_and_used_and_preserves_codex_flags() {
         assert_eq!(

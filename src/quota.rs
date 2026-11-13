@@ -47,7 +47,9 @@ impl Usage {
         windows(source).iter().any(|w| name(w) == "3p-weekly")
     }
 
-    pub fn quota(&self, agent: &str, third_party: bool) -> std::result::Result<Quota, String> {
+    // pub fn quota(&self, agent: &str, third_party: bool) -> std::result::Result<Quota, String> {
+    /// For agy, only the buckets that meter `model` count (agy::meters); other agents ignore it.
+    pub fn quota(&self, agent: &str, model: &str) -> std::result::Result<Quota, String> {
         let source = self.source(agent);
         if source.is_null() {
             return Err("no cached usage".into());
@@ -89,14 +91,17 @@ impl Usage {
         let mut pace = source["pace"].as_f64();
         for w in windows(data) {
             let label = name(&w);
-            if agent == "agy"
-                && label
-                    != if third_party {
-                        "3p-weekly"
-                    } else {
-                        "gemini-weekly"
-                    }
-            {
+            // if agent == "agy"
+            //     && label
+            //         != if third_party {
+            //             "3p-weekly"
+            //         } else {
+            //             "gemini-weekly"
+            //         }
+            // {
+            //     continue;
+            // }
+            if agent == "agy" && !crate::agy::meters(model, &label) {
                 continue;
             }
             let budget = if agent == "codex" {
@@ -215,19 +220,40 @@ mod tests {
                 "agy": serde_json::from_str::<Value>(include_str!("../tests/fixtures/usage/agy-usage.json")).unwrap()
             }
         }));
-        let q = usage.quota("codex", false).unwrap();
+        let q = usage.quota("codex", "").unwrap();
         assert_eq!(q.remaining, 2_325_000.0);
         assert_eq!(q.window, "5h");
         assert!(usage.has_third_party());
-        assert_eq!(usage.quota("agy", true).unwrap().remaining, 6_000_000.0);
+        assert_eq!(usage.quota("agy", "claude-opus-5-5").unwrap().remaining, 6_000_000.0);
         assert!(
-            (usage.quota("agy", false).unwrap().remaining - 0.5302495956420898 * 6_000_000.0).abs()
+            (usage.quota("agy", crate::agy::FLASH).unwrap().remaining - 0.5302495956420898 * 6_000_000.0).abs()
                 < 1e-8
         );
+        // A free-tier cache has no Argon bucket.
+        assert!(usage.quota("agy", crate::agy::ARGON).is_err());
         usage.0["sources"]["codex"]["result"]["rateLimits"]["rateLimitReachedType"] =
             json!("primary");
-        assert!(usage.quota("codex", false).is_err());
+        assert!(usage.quota("codex", "").is_err());
         usage.0["sources"]["agy"]["error"] = json!("unavailable");
-        assert!(usage.quota("agy", true).is_err());
+        assert!(usage.quota("agy", "claude-opus-5-5").is_err());
+    }
+
+    #[test]
+    fn pro_buckets_gate_each_model_by_its_tightest() {
+        // `agy -p /usage --output-format json` on the Pro plan, 2026-11-13, with some use.
+        let mut raw: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/usage/agy-usage-pro.json"))
+                .unwrap();
+        let usage = |raw: &Value| Usage(json!({"sources":{"agy":raw}}));
+        let q = usage(&raw).quota("agy", crate::agy::ARGON).unwrap();
+        assert_eq!(q.window, "gemini-argon-wtu-weekly");
+        assert!((q.remaining - 0.75 * 6_000_000.0).abs() < 1e-6);
+        // Hydrogen: the 5 h window is the tighter of the Gemini group's two.
+        let q = usage(&raw).quota("agy", crate::agy::HYDROGEN).unwrap();
+        assert_eq!(q.window, "gemini-5h");
+        assert!((q.remaining - 0.4 * 6_000_000.0).abs() < 1e-6);
+        raw["command"]["data"]["groups"][2]["buckets"][0]["remaining_fraction"] = json!(0.0);
+        assert_eq!(usage(&raw).quota("agy", crate::agy::ARGON).unwrap().remaining, 0.0);
+        assert!(usage(&raw).quota("agy", crate::agy::HYDROGEN).unwrap().remaining > 0.0);
     }
 }

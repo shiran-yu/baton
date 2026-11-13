@@ -133,14 +133,18 @@ No `--ephemeral`: the rollout under `~/.codex/sessions/` carries live `token_cou
   which would hide the worktree's worker agent; and outside a trusted workspace agy soft-denies even
   reads, so `baton setup` adds `read_file(<root>/)` and `write_file(<root>/)` to agy's
   `permissions.allow`. Codex worktrees stay under `$BATON_HOME/wt/`.
-- Model and effort, chosen at run time: `gemini-3.8-flash` by default (user, 2026-11-12), at the
-  highest effort `agy models` lists for it as `<model>-<effort>` (`gemini-3.8-flash-high`; the
-  listing is free, about 3 s). A Claude model runs only when `--model` names it; a model from
-  `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `gemini-3.8-flash` that agy no longer lists falls
-  back to the next listed one. A model listed bare gets no `--effort`: agy refuses one for the
-  Claude models ("--effort is not supported for model"). The Claude models draw on the small
-  `3p-weekly` bucket. A `--model` outside that list is used as given; a failed listing changes
-  nothing.
+- Model and effort, chosen at run time by the user's policy (2026-11-13, Pro plan; one place,
+  `src/agy.rs`): Argon (`gemini-4-argon`, the counterpart of Claude's strongest model) for
+  judgement work (reviews; implement, refactor, bugfix and test from D2) while its own
+  `gemini-argon-wtu-weekly` bucket allows, Hydrogen (`gemini-4-hydrogen`, Sonnet's counterpart) when
+  Argon is used up and for tool work (mechanical, docs, research, D1). Each runs at the highest
+  effort `agy models` lists for it as `<model>-<effort>` (Argon `high`, Hydrogen `xhigh` today; the
+  listing is free, about 3 s); Gemini 3.8 Flash at its highest is the last fallback when neither is
+  listed or has quota. The caller's `--model` and `--effort` win; a model from `gemini-4-argon`,
+  `gemini-4-hydrogen`, `gemini-3.8-flash` that agy no longer lists falls back to the next listed
+  one, and any other `--model` is used as given. A model listed bare gets no `--effort` (agy
+  refuses one). agy's Claude 5.5 models draw on the `3p` buckets and run only when `--model` names
+  them. A failed listing leaves the choice to the quota.
 - Worker agent: `excludeDefaultComponents: false`, `inheritCustomizations: true`,
   `subagent: false`, and a YAML tool list. It inherits the user's skills, rules, plugins (24
   synced by `baton sync --to agy`) and their hooks, and agy's default prompt sections list the
@@ -183,10 +187,12 @@ No `--ephemeral`: the rollout under `~/.codex/sessions/` carries live `token_cou
 - Pin `--model`; never `-c` (it picks the last conversation for the cwd and races between
   parallel runs); never an unknown `--mode` (it only warns and runs a default turn).
 - Quota: `agy -p /usage --output-format json` is free and returns `remaining_fraction` and reset
-  time per bucket: `gemini-weekly` (Gemini Models) and `3p-weekly` (Claude and GPT models). The
-  Claude 4.6 and GPT-OSS models leave agy on 2026-11-02; after that only `gemini-3.8-flash`
-  (low, medium, high) remains, routing stops offering the `3p` bucket (`THIRD_PARTY_CUTOFF`), and
-  runs fall back through `agy models`.
+  time per bucket. On the Pro plan (2026-11-13) each group has a weekly and a 5 h bucket:
+  `gemini-weekly` and `gemini-5h` (Gemini Models: Hydrogen, Flash), `3p-weekly` and `3p-5h`
+  (Claude and GPT models), plus `gemini-argon-wtu-weekly` (Gemini 4 Argon). baton parses any bucket
+  by its `window` and skips one it cannot read; each model is gated by the tightest bucket that
+  meters it. A successful live read replaces a sticky exhaustion mark on agy, so a run that used up
+  Argon does not keep Hydrogen blocked.
 - Global hooks in `~/.gemini/config/hooks.json` (for example Orca's status hooks) run on every
   worker call and add process start-up time; `baton doctor` reports them.
 
@@ -256,9 +262,10 @@ Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lin
 - Hard rules: risky briefs go to the lead; D4 or no acceptance commands go to the lead; a worker
   whose remaining quota is below the task's expected cost is skipped.
 - Quota and task type pick the worker; model and effort are always that worker's best (§5),
-  whatever the difficulty (user, 2026-10-29). Codex: `gpt-6-astra` at `xhigh`. agy: Gemini 3.8
-  Flash since 2026-11-12 (user), with the effort found at run time; routing no longer proposes
-  agy's Claude models. Copilot keeps its own difficulty ladder.
+  whatever the difficulty (user, 2026-10-29). Codex: `gpt-6-astra` at `xhigh`. agy: the model
+  policy of §5 (2026-11-13): Argon then Hydrogen for judgement work, Hydrogen for tool work, each a
+  candidate gated by its own buckets, a weaker one skipped while a stronger one is eligible, with
+  the effort found at run time. Copilot keeps its own difficulty ladder.
 
 ## 9. Ledger
 
@@ -278,6 +285,15 @@ aggregates it.
   hook command is wrapped in `baton hook-adapt --from <host>` so a Claude-format hook script sees
   Claude-format input under any host. Trading plugins are mirrored to agy only after their guard
   passes the adapter's tests.
+- For agy, each skill Claude Code loads is staged as its Claude-native SKILL.md: a Codex adapter
+  shim in `skills/<s>/` is replaced by the SKILL.md it points at, the folders a marketplace entry
+  lists under `skills` are staged, and a plugin with only a root SKILL.md gets it as a skill. The
+  plugin files a skill refers to are copied with it (one over 2 MB stays behind and the sync line
+  says so), and `${CLAUDE_PLUGIN_ROOT}` in its Markdown becomes the agy install path: headless agy
+  reads inside the installed plugin but soft-denies `~/.claude/plugins/cache/`, and `agy plugin
+  install` refuses a symlink leaving the plugin. `.baton-sync.json` records the plugin version,
+  its source and the converter version; a change in any of them re-stages the plugin on the next
+  `baton sync` (nothing runs it automatically).
 
 ## 11. State
 

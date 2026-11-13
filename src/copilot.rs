@@ -45,7 +45,8 @@ fn quota_guard() -> Res<()> {
     let home = paths::home()?;
     usage::read(&home, false)?;
     let quota = crate::quota::Usage::cached(&home)
-        .quota("copilot", false)
+        // .quota("copilot", false)
+        .quota("copilot", "")
         .map_err(|e| {
             if e == usage::COPILOT_ENDED {
                 Error::new(4, e)

@@ -229,11 +229,31 @@ pub fn short(agent: &str, remaining: f64, cost: f64) -> Option<&'static str> {
     }
 }
 
+/// Whether the cached quota lets agy run `model` on a task of difficulty `d`, by the tightest
+/// bucket metering it. With no cached agy usage at all the policy's first choice stands.
+pub fn agy_allowed(usage: &Usage, model: &str, d: u8) -> bool {
+    match usage.quota("agy", model) {
+        Ok(q) => short("agy", q.remaining, default_cost("agy", d)).is_none(),
+        Err(_) => usage.source("agy").is_null(),
+    }
+}
+
 /// Prompt-hook advice from cached quota: the first worker eligible for a default D2 task.
 pub fn hint(usage: &Usage) -> String {
     for agent in ["codex", "agy", "copilot"] {
-        let quota = usage.quota(agent, false);
-        if quota.is_ok_and(|q| short(agent, q.remaining, default_cost(agent, 2)).is_none()) {
+        // let quota = usage.quota(agent, false);
+        // agy is eligible when any model of its D2 tiers is.
+        let models = if agent == "agy" {
+            crate::agy::tiers("implement", 2)
+        } else {
+            vec![""]
+        };
+        let eligible = models.into_iter().any(|model| {
+            usage
+                .quota(agent, model)
+                .is_ok_and(|q| short(agent, q.remaining, default_cost(agent, 2)).is_none())
+        });
+        if eligible {
             let read = if agent == "copilot" {
                 " (read-only)"
             } else {
@@ -266,16 +286,24 @@ pub fn recommend(
     // Quota and task type pick the worker, never a weaker model or effort (user 2026-10-29).
     // agy: Claude Opus on the 3p bucket until it leaves agy, else Gemini; strongest first.
     // agy runs Gemini by default since 2026-11-12 (user); a Claude model only through --model.
-    let mut models = vec![("codex", crate::codex::MODEL, false)];
+    // let mut models = vec![("codex", crate::codex::MODEL, false)];
     // if now < THIRD_PARTY_CUTOFF && usage.has_third_party() {
     //     models.push(("agy", crate::agy::MODELS[0], true));
     // }
-    models.push(("agy", crate::agy::GEMINI, false));
+    // models.push(("agy", crate::agy::GEMINI, false));
+    // agy since 2026-11-13 (user): the model policy's tiers in agy.rs, strongest first, each gated
+    // by the buckets that meter it (Argon, else Hydrogen; tool work Hydrogen).
+    let mut models = vec![("codex", crate::codex::MODEL)];
+    for model in crate::agy::tiers(&class.task_type, d) {
+        models.push(("agy", model));
+    }
     if mode == "read" && d <= 2 {
-        models.push(("copilot", "auto", false));
+        // models.push(("copilot", "auto", false));
+        models.push(("copilot", "auto"));
     }
     let mut candidates = Vec::new();
-    for (agent, model, third_party) in models {
+    // for (agent, model, third_party) in models {
+    for (agent, model) in models {
         let (p, runs) = posterior(agent, &class.task_type, d, history);
         let cost = if agent == "copilot" {
             default_cost(agent, d)
@@ -313,7 +341,8 @@ pub fn recommend(
             skipped: None,
             reason: String::new(),
         };
-        match usage.quota(agent, third_party) {
+        // match usage.quota(agent, third_party) {
+        match usage.quota(agent, model) {
             Err(reason) => {
                 c.skipped = Some(reason.clone());
                 c.reason = reason;
@@ -671,27 +700,71 @@ mod tests {
     //     }
     // }
 
-    // Since 2026-11-12 (user) agy is routed on Gemini only, even with a full 3p bucket before the cutoff.
+    // From 2026-11-12 to 11-13 (user) agy was routed on Gemini 3.8 Flash only:
+    // #[test]
+    // fn agy_routes_gemini_only() {
+    //     let b = brief("Build it", "src/main.rs", "true");
+    //     let class = classify(&b, None, None).unwrap();
+    //     let mut u = usage();
+    //     u.0["agy"]["windows"]
+    //         .as_array_mut()
+    //         .unwrap()
+    //         .push(json!({"id":"3p-weekly","used":0.0}));
+    //     let r = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
+    //     assert_eq!(r.candidates.len(), 3);
+    //     assert!(r
+    //         .candidates
+    //         .iter()
+    //         .all(|c| c.model.as_deref() != Some("claude-opus-4-6-thinking")));
+    //     let gemini = r
+    //         .candidates
+    //         .iter()
+    //         .find(|c| c.model.as_deref() == Some("gemini-3.8-flash"))
+    //         .unwrap();
+    //     assert!(gemini.score.is_some() && gemini.skipped.is_none());
+    // }
+
+    // Since 2026-11-13 (user): agy's model policy (agy.rs), each model gated by its own buckets.
     #[test]
-    fn agy_routes_gemini_only() {
-        let b = brief("Build it", "src/main.rs", "true");
-        let class = classify(&b, None, None).unwrap();
+    fn agy_routes_argon_for_judgement_and_hydrogen_for_tool_work() {
+        use crate::agy::{ARGON, HYDROGEN};
         let mut u = usage();
-        u.0["agy"]["windows"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"id":"3p-weekly","used":0.0}));
-        let r = recommend(&class, &b, &[], &u, THIRD_PARTY_CUTOFF - 1, "edit");
-        assert_eq!(r.candidates.len(), 3);
-        assert!(r
-            .candidates
-            .iter()
-            .all(|c| c.model.as_deref() != Some("claude-opus-4-6-thinking")));
-        let gemini = r
-            .candidates
-            .iter()
-            .find(|c| c.model.as_deref() == Some("gemini-3.8-flash"))
-            .unwrap();
-        assert!(gemini.score.is_some() && gemini.skipped.is_none());
+        u.0["codex"]["error"] = json!("usage limit reached");
+        u.0["agy"]["windows"].as_array_mut().unwrap().extend([
+            json!({"id":"gemini-argon-wtu-weekly","used":0.1,"pace":0.5}),
+            json!({"id":"gemini-5h","used":0.2,"pace":0.5}),
+            json!({"id":"3p-weekly","used":0.0}),
+        ]);
+        let route = |goal: &str, u: &Usage| {
+            let b = brief(goal, "src/main.rs", "true");
+            recommend(&classify(&b, None, None).unwrap(), &b, &[], u, THIRD_PARTY_CUTOFF, "read")
+        };
+        let agy = |r: &Routing| -> Vec<(String, bool)> {
+            r.candidates
+                .iter()
+                .filter(|c| c.agent == "agy")
+                .map(|c| (c.model.clone().unwrap(), c.score.is_some()))
+                .collect()
+        };
+        let review = route("Review the parser", &u);
+        assert_eq!(review.choice.model.as_deref(), Some(ARGON));
+        // agy's effort is the highest `agy models` lists, found at run time.
+        assert!(review.choice.effort.is_none());
+        assert_eq!(agy(&review), [(ARGON.to_string(), true), (HYDROGEN.to_string(), false)]);
+        let mechanical = route("Rename the widget", &u);
+        assert_eq!(mechanical.choice.model.as_deref(), Some(HYDROGEN));
+        assert_eq!(agy(&mechanical), [(HYDROGEN.to_string(), true)]);
+        // Argon used up: Hydrogen stands in.
+        u.0["agy"]["windows"][1]["used"] = json!(0.999);
+        let review = route("Review the parser", &u);
+        assert_eq!(review.choice.model.as_deref(), Some(HYDROGEN));
+        assert!(agy(&review).contains(&(ARGON.to_string(), false)));
+        // The Gemini group's 5 h bucket is the tighter one and gates Hydrogen.
+        u.0["agy"]["windows"][2]["used"] = json!(0.999);
+        let mechanical = route("Rename the widget", &u);
+        let hydrogen = &mechanical.candidates.iter().find(|c| c.agent == "agy").unwrap();
+        assert_eq!(hydrogen.window.as_deref(), Some("gemini-5h"));
+        assert!(hydrogen.score.is_none());
+        assert_eq!(mechanical.choice.agent, "claude");
     }
 }

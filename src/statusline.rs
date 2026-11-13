@@ -39,11 +39,28 @@ fn quota(snapshot: &usage::Snapshot, agent: &str, compact: bool) -> String {
         .map(|s| {
             s.windows
                 .iter()
+                // agy: Argon and the Gemini group (Hydrogen, Flash); routing never uses the 3p group.
+                .filter(|w| agent != "agy" || w.window.starts_with("gemini-"))
                 .map(|w| {
-                    let name = match w.window.as_str() {
+                    // let name = match w.window.as_str() {
+                    //     "weekly" => "wk",
+                    //     "gemini-weekly" => "gem",
+                    //     "3p-weekly" => "3p",
+                    //     other => other,
+                    // };
+                    // agy: `argon`, then the Gemini group's `5h` and `wk`, all as fractions left.
+                    let label = if agent == "agy" {
+                        match usage::agy_label(w).as_str() {
+                            "argon wk" => "argon".into(),
+                            "gemini 5h" => "5h".into(),
+                            "gemini wk" => "wk".into(),
+                            other => other.to_string(),
+                        }
+                    } else {
+                        w.window.clone()
+                    };
+                    let name = match label.as_str() {
                         "weekly" => "wk",
-                        "gemini-weekly" => "gem",
-                        "3p-weekly" => "3p",
                         other => other,
                     };
                     format!(

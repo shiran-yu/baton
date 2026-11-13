@@ -71,10 +71,16 @@ Useful payloads [M]:
 ### 2.1 Invariants for every run
 ```sh
 cd "$WORKTREE" && agy -p "$PROMPT" \
-  --agent "$AGENT" --model claude-opus-4-6-thinking \
+  --agent "$AGENT" --model gemini-4-argon --effort high \
   --output-format stream-json --print-timeout 15m </dev/null 2>"$RUN/stderr" >"$RUN/events.ndjson"
 ```
-- **Model and effort (baton since 2026-10-29: the strongest model, reliability over cost):** before each run baton takes the first of `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `gemini-3.8-flash` that `agy models` lists, at the highest effort listed for it as `<model>-<effort>` (`gemini-3.8-flash-high`), and passes no `--effort` for a model listed bare. After 2026-11-02 that is `--model gemini-3.8-flash --effort high`.
+- **Model and effort (user's policy, 2026-11-13, Pro plan; code: `src/agy.rs`):**
+  - Argon (`gemini-4-argon`) is the top tier, the counterpart of Claude's strongest model: judgement work (reviews, design-sensitive edits, implement/refactor/bugfix/test from D2) runs on it whenever its weekly bucket allows. When Argon is used up, Hydrogen (`gemini-4-hydrogen`) stands in.
+  - Hydrogen is Sonnet's counterpart: tool work (mechanical, docs, research sweeps and extraction, any D1 task) runs on it.
+  - Every model runs at the highest effort `agy models` lists for it as `<model>-<effort>`: Argon `high` (listed low/medium/high), Hydrogen `xhigh` (listed low to xhigh), so an `argon-xhigh` listed later is picked up. Gemini 3.8 Flash at its highest (`high`) is the last fallback, when neither is listed or neither has quota.
+  - The caller's `--model` and `--effort` win; a model listed bare (`gpt-oss-120b-medium`) gets no `--effort`. Claude Opus/Sonnet 5.5 (3p buckets) run only when `--model` names them. Argon is the preferred model for polishing paper prose (read-only suggestions the lead verifies).
+  - `agy models` on 2026-11-13 (agy 1.5.7, Linux aarch64): `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`, `gemini-pro-orchestrator-g1-pro` (the TUI default "Orchestrator (Argon)"), `gemini-3.8-flash-{low,medium,high}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}`, `gpt-oss-120b-medium`. The 4.6 models of 2026-10-29 are gone.
+- **Skill files are outside the workspace [M, 2026-11-13]:** baton's first message forbids reading outside the root *except* a skill's SKILL.md and the files it links to under `~/.gemini/config/plugins/`. Without that exception Hydrogen at `medium` obeyed the prompt and refused to open the skill; Argon and Hydrogen at `high`/`xhigh` opened it anyway.
 - **Always `</dev/null`** (or a pipe you control). With no creds, agy waits 60 s on the controlling TTY for an OAuth code [M].
 - **cwd is the workspace.** Workspace reads and writes are auto-allowed only under cwd and `--add-dir` roots. `.agents/` customizations are found by walking up from cwd to the repo root. An untrusted `/private/tmp` workspace still loaded `.agents/agents/*.md` [M].
 - **Timeouts:** use `--print-timeout`, plus a baton-side SIGTERM then SIGKILL. agy **ignores SIGALRM**: a `perl alarm` wrapper never killed it [M]. SIGINT gives status `INTERRUPTED` and a non-zero exit.
@@ -225,8 +231,17 @@ Claude and GPT models	Weekly Limit Remaining	100%	2026-10-26T13:40:49Z
 ```
 - **Buckets:** `gemini-weekly` covers the Gemini Models group; `3p-weekly` covers the Claude and GPT models group.
 - The **weekly window starts at first use.** An unused bucket reports `reset_time = now + 7 d`, which slides on every call. A used bucket's reset is fixed.
-- This account has **only weekly buckets**, which matches the docs for the free tier ("refreshed weekly").
-- Pro and Ultra add a quota "refreshed every five hours until the weekly limit" [D]. Bucket ids for that window were not observable here. Baton should key on the `window` field and display unknown windows generically.
+- On the free tier (until 2026-11-12) this account had **only weekly buckets**, which matches the docs ("refreshed weekly").
+- **Pro plan [M, 2026-11-13, agy 1.5.7]:** five buckets in three groups. Each group has a weekly and a five-hour bucket ("Within each group, models share a weekly limit and a 5-hour limit"), plus a separate Argon group:
+
+  | Group | Bucket `id` | `window` | Meters |
+  |---|---|---|---|
+  | Gemini Models | `gemini-weekly`, `gemini-5h` | `weekly`, `5h` | Hydrogen, Flash |
+  | Claude and GPT models | `3p-weekly`, `3p-5h` | `weekly`, `5h` | Claude Opus/Sonnet 5.5, GPT-OSS |
+  | Gemini 4 Argon | `gemini-argon-wtu-weekly` | `weekly` | Argon (separate on Pro; part of the Gemini bucket on Ultra) |
+
+  baton parses every bucket generically by its `window` (`weekly`, `daily`, `<n>m|h|d`) and skips one it cannot read; routing gates each model by the tightest bucket that meters it. `baton usage` prints all five (`argon wk`, `gemini 5h`, `gemini wk`, `claude+gpt 5h`, `claude+gpt wk`, as fractions left); the prompt-hook line prints `AG argon N% 5h N% wk N%` (the Gemini group's 5 h and weekly).
+- **`remaining_fraction` is noisy at the 0.5-point level:** reads at most a few minutes apart on 2026-11-13 alternated between two values (Argon 0.9537 and 0.9484) with no run in between, and a bucket sometimes read higher after a run than before. Compare deltas only above about one point.
 - `/credits` → `{"remaining_credits":0,"upgrade_uri":…}`. The `useG1Credits` setting (default false) decides whether credits are spent after the plan quota runs out.
 
 ### 4.2 Burn-rate observation [M]
@@ -286,6 +301,9 @@ Claude and GPT models	Weekly Limit Remaining	100%	2026-10-26T13:40:49Z
 - **Progressive disclosure:** only name and description go in the prompt. The model reads the file when it is relevant (`view_file` with `IsSkillFile`).
 - Every skill becomes `/skill-name` (`/<plugin>:<skill>` for plugin skills).
 - [I] An agent built with `excludeDefaultComponents` needs `view_file` to read skills. `preloadSkills` (a frontmatter key in the binary) probably inlines specific skills; verify before relying on it.
+- **What a skill can read [M, 2026-11-13, agy 1.5.7, headless read agent with `--add-dir <root>`]:** a probe plugin's skill read every file inside the installed plugin (`~/.gemini/config/plugins/<p>/`), also outside the skill's own folder; a file under `$TMPDIR` was readable; a file under `~/.claude/plugins/cache/` was soft-denied (`denied_actions: [read_file]`). So a skill's resources must be copied into the agy plugin; absolute paths into the Claude install do not work headless. The tool now reports as `read_file`; agent files listing `view_file` still get it.
+- **`agy plugin install <dir>` copies the plugin** into `~/.gemini/config/plugins/<name>/`: a symlink that stays inside the plugin is dereferenced, one that points outside it fails the install ("symlink … points outside").
+- **baton's converter (`baton sync --to agy`, converter 2, 2026-11-13):** stages the skills Claude Code loads: `skills/<s>/SKILL.md`, or the SKILL.md a Codex adapter shim there points at (`../../SKILL.md`, `../../<dir>/SKILL.md`); the folders a marketplace entry or plugin manifest lists under `skills`; else a root SKILL.md. A root SKILL.md's plugin files go beside it; a skill folder's `../../X` and `${CLAUDE_PLUGIN_ROOT}/X` go to the plugin root, and the variable becomes the install path. Referenced entries are followed through their Markdown; one over 2 MB stays behind (mo-academic-taste's 4.6 MB `corpus/`). `.baton-sync.json` carries `converter`, so a converter change re-stages every plugin. agy does not refuse a SKILL.md over the 24 KB limit (distributed-training's `deepspeed`, 145 KB, loads).
 
 ### 5.4 Custom agents (Markdown)
 - **Frontmatter keys** [D][C][B]:
@@ -425,7 +443,7 @@ Built-in termination checks run after hooks.json hooks [C]. `/btw` side question
 8. **Kill semantics:** `--print-timeout` expiry gives exit 0 with partial output, so check stderr and `status`. SIGALRM is ignored; use SIGTERM or SIGKILL. A stalled model stream is only cancelled after 5 minutes.
 9. **Auth is HOME-bound.** With a fake `HOME`, agy waited 60 s for an OAuth code on the TTY. Never change HOME for workers, and always redirect stdin.
 10. **Model churn:** `claude-sonnet-4-6`, `claude-opus-4-6-thinking` and `gpt-oss-120b-medium` disappear on **2026-11-02**. The 5.5 Claude models need Pro (non-trial) or Ultra, and Gemini 4 Argon needs Pro or Ultra. Pin slugs and handle exit 1 from an unknown model; baton checks `agy models` before each run and falls back along its ordered list (2.1).
-11. **Claude Code plugins don't load as-is.** Install-time conversion silently drops agents (comma-string `tools`), leaves hooks inert (`Bash` matcher, literal `${CLAUDE_PLUGIN_ROOT}`, empty SessionStart command) and misnames converted commands (`plugin:SKILL`).
+11. **Claude Code plugins don't load as-is.** Install-time conversion silently drops agents (comma-string `tools`), leaves hooks inert (`Bash` matcher, literal `${CLAUDE_PLUGIN_ROOT}`, empty SessionStart command) and misnames converted commands (`plugin:SKILL`). Until converter 2 (2026-11-13) baton copied only `skills/`, so a Codex adapter shim arrived as a pointer to a root SKILL.md agy never got, and a root-only skill arrived as nothing (5.3).
 12. **The docs are partly stale against 1.4.2:**
     - The print-timeout default is 0, not 5m.
     - `--json-schema` doesn't accept primitives.

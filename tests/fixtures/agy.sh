@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
-# like `agy models` on 2026-10-29; FAKE_AGY_MODELS overrides the list
+# like `agy models` on 2026-11-13 (Pro plan); FAKE_AGY_MODELS overrides the list
+# (2026-10-29: gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-sonnet-4-6 claude-opus-4-6-thinking gpt-oss-120b-medium)
 if [ "${1-}" = models ]; then
-    for model in ${FAKE_AGY_MODELS-gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-sonnet-4-6 claude-opus-4-6-thinking gpt-oss-120b-medium}; do
+    for model in ${FAKE_AGY_MODELS-gemini-4-argon-medium gemini-4-argon-high gemini-4-argon-low gemini-4-hydrogen-high gemini-4-hydrogen-xhigh gemini-4-hydrogen-medium gemini-4-hydrogen-low gemini-pro-orchestrator-g1-pro gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-opus-5-5-low claude-opus-5-5-medium claude-opus-5-5-high claude-sonnet-5-5-low claude-sonnet-5-5-medium claude-sonnet-5-5-high gpt-oss-120b-medium}; do
         printf '%s\t%s\n' "$model" "$model"
     done
     exit 0

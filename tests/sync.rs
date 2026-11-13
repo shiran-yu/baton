@@ -774,3 +774,84 @@ fn cli_rejects_bad_options_before_creating_state() {
     }
     assert!(!Path::new(&f.dir.join("state/calls")).exists());
 }
+
+// Converter 2 (2026-11-13): the Claude-native SKILL.md with the files it refers to.
+#[test]
+fn agy_stages_claude_native_skills_with_their_files() {
+    let f = Fixture::new();
+    let plugins = ["shim", "rootonly", "listed", "native"];
+    let inventory: serde_json::Map<String, Value> = plugins
+        .iter()
+        .map(|p| {
+            (
+                format!("{p}@my-develop-plugins"),
+                json!([{"installPath":f.dir.join("sources").join(p),"version":"1"}]),
+            )
+        })
+        .collect();
+    f.write_json(
+        "claude/installed_plugins.json",
+        &json!({"version":2,"plugins":inventory}),
+    );
+    f.write_json(
+        "claude/known_marketplaces.json",
+        &json!({"my-develop-plugins":{"installLocation":f.dir.join("market")}}),
+    );
+    f.write_json(
+        "market/.claude-plugin/marketplace.json",
+        &json!({"name":"my-develop-plugins","plugins":[{"name":"listed","skills":["./sub/tool"]}]}),
+    );
+    // A Codex adapter shim defers to the root SKILL.md, which names references/ and scripts/.
+    f.write("sources/shim/skills/shim/SKILL.md", "---\nname: shim\ndescription: Adapter\n---\nThe authoritative workflow is at `../../SKILL.md`, relative to this file.\n");
+    f.write("sources/shim/SKILL.md", "---\nname: shim\ndescription: Native\n---\nRead [the bans](references/writing.md), then run `scripts/check.py`.\n");
+    f.write("sources/shim/references/writing.md", "# Bans\nEvidence lives in corpus/papers/.\n");
+    f.write("sources/shim/scripts/check.py", "print('ok')\n");
+    f.write("sources/shim/tests/test_check.py", "unreferenced\n");
+    f.write("sources/shim/corpus/papers/big.txt", &"x".repeat(3 << 20));
+    // Only a root SKILL.md.
+    f.write("sources/rootonly/SKILL.md", "---\nname: rootonly\ndescription: Root only\n---\nUse ./algobox/ and README.md.\n");
+    f.write("sources/rootonly/algobox/box.py", "pass\n");
+    f.write("sources/rootonly/README.md", "readme\n");
+    // A skill folder named by the marketplace entry.
+    f.write("sources/listed/sub/tool/SKILL.md", "---\nname: tool\ndescription: Listed\n---\nSee notes/a.md.\n");
+    f.write("sources/listed/sub/tool/notes/a.md", "note\n");
+    // A native skill reaching the plugin root.
+    f.write("sources/native/skills/n/SKILL.md", "---\nname: n\ndescription: Native\n---\nRun `${CLAUDE_PLUGIN_ROOT}/scripts/x.py` or `../../bin/tool`.\n");
+    f.write("sources/native/scripts/x.py", "pass\n");
+    f.write("sources/native/bin/tool", "#!/bin/sh\n");
+    f.write("sources/native/docs/unused.md", "unused\n");
+    let out = f.call(&["sync", "--to", "agy"]);
+    success(&out);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("shim agy: installed (shim: left out corpus, 3.0 MB)"), "{text}");
+    let staged = |path: &str| f.dir.join("state/agy-plugins").join(path);
+    let read = |path: &str| fs::read_to_string(staged(path)).unwrap();
+    assert!(read("shim/skills/shim/SKILL.md").contains("description: Native"));
+    assert!(read("shim/skills/shim/references/writing.md").starts_with("# Bans"));
+    assert!(staged("shim/skills/shim/scripts/check.py").is_file());
+    for gone in ["shim/skills/shim/tests", "shim/skills/shim/corpus", "shim/skills/shim/skills"] {
+        assert!(!staged(gone).exists(), "{gone}");
+    }
+    assert!(read("rootonly/skills/rootonly/SKILL.md").starts_with("---\nname: rootonly\n"));
+    assert!(staged("rootonly/skills/rootonly/algobox/box.py").is_file());
+    assert!(staged("rootonly/skills/rootonly/README.md").is_file());
+    assert!(read("listed/skills/tool/notes/a.md").starts_with("note"));
+    let installed = f.dir.join(".gemini/config/plugins/native");
+    assert!(read("native/skills/n/SKILL.md").contains(&format!(
+        "Run `{}/scripts/x.py`",
+        installed.display()
+    )));
+    assert!(staged("native/scripts/x.py").is_file() && staged("native/bin/tool").is_file());
+    assert!(!staged("native/docs").exists());
+    assert_eq!(
+        f.read_json("state/agy-plugins/native/.baton-sync.json")["converter"],
+        2
+    );
+    // A marker from an older converter is re-staged even at the same plugin version.
+    let mut marker = f.read_json("state/agy-plugins/native/.baton-sync.json");
+    marker.as_object_mut().unwrap().remove("converter");
+    f.write_json("state/agy-plugins/native/.baton-sync.json", &marker);
+    let text = String::from_utf8(f.call(&["sync", "--to", "agy"]).stdout).unwrap();
+    assert!(text.contains("native agy: installed"), "{text}");
+    assert!(text.contains("rootonly agy: up to date"), "{text}");
+}

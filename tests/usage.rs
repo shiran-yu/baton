@@ -359,7 +359,9 @@ fn statusline_cache_only_and_malformed_cache() {
     let out = f.call(&["statusline", "line"]);
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        "CX 5h 7% wk 3% · AG gem 53% 3p 100% · CC 5h 36% 7d 7%\n"
+        // "CX 5h 7% wk 3% · AG gem 53% 3p 100% · CC 5h 36% 7d 7%\n"
+        // agy: Argon and the Gemini group, fractions left; the 3p group is left out.
+        "CX 5h 7% wk 3% · AG wk 53% · CC 5h 36% 7d 7%\n"
     );
     assert_eq!(
         fs::read_to_string(f.dir.join("state/calls"))
@@ -370,6 +372,49 @@ fn statusline_cache_only_and_malformed_cache() {
     );
     fs::write(f.dir.join("state/usage.json"), "malformed").unwrap();
     assert!(f.call(&["statusline", "line"]).stdout.is_empty());
+}
+
+#[test]
+fn pro_plan_buckets_in_usage_statusline_and_hint() {
+    let f = Fixture::new();
+    fs::write(
+        f.dir.join("agy.json"),
+        include_str!("fixtures/usage/agy-usage-pro.json"),
+    )
+    .unwrap();
+    let snapshot = f.usage(true);
+    let ids: Vec<_> = source(&snapshot, "agy")["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["window"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        ["gemini-argon-wtu-weekly", "gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"]
+    );
+    let line = String::from_utf8(f.call(&["statusline", "line"]).stdout).unwrap();
+    assert!(line.contains(" · AG argon 75% 5h 40% wk 90% · "), "{line}");
+    let table = String::from_utf8(f.call(&["usage"]).stdout).unwrap();
+    for part in ["argon wk 75% left", "gemini 5h 40% left", "gemini wk 90% left", "claude+gpt 5h 100% left"] {
+        assert!(table.contains(part), "{part}: {table}");
+    }
+    // Codex and Copilot out of quota leave the agy line and its hint intact.
+    let mut snapshot = snapshot;
+    for agent in snapshot["agents"].as_array_mut().unwrap() {
+        match agent["agent"].as_str().unwrap() {
+            "codex" => {
+                agent["error"] = json!("You've hit your usage limit.");
+                agent["exhausted"] = json!(true);
+            }
+            "copilot" => agent["error"] = json!("copilot unavailable: subscription ended"),
+            _ => {}
+        }
+    }
+    fs::write(f.dir.join("state/usage.json"), snapshot.to_string()).unwrap();
+    let hint = String::from_utf8(f.call(&["statusline", "hint"]).stdout).unwrap();
+    assert!(hint.contains("AG argon 75% 5h 40% wk 90%"), "{hint}");
+    assert!(hint.trim_end().ends_with("baton:agy first"), "{hint}");
 }
 
 #[test]

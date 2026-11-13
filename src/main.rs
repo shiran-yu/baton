@@ -371,7 +371,19 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
     }
     brief::lint(&brief.text)?;
     if run.agent == "agy" {
-        (run.model, run.effort) = agy::choose(&run.model, run.effort);
+        // (run.model, run.effort) = agy::choose(&run.model, run.effort);
+        (run.model, run.effort) = if run.model.is_empty() {
+            // No --model: the policy's model for this task, gated by the cached quota; --effort wins.
+            fresh_usage(home);
+            let usage = quota::Usage::cached(home);
+            let (model, effort) =
+                agy::policy(&agy::tiers(&class.task_type, class.difficulty), |model| {
+                    route::agy_allowed(&usage, model, class.difficulty)
+                });
+            (model, run.effort.or(effort))
+        } else {
+            agy::choose(&run.model, run.effort)
+        };
     }
     // Copilot reads the same folder as Codex in read mode: the git root, else the current folder.
     let read_folder: Option<PathBuf> = None;
@@ -825,7 +837,13 @@ fn review(home: &Path, task: &str, by: String) -> Res<i32> {
     // The reviewer's strongest model and highest effort, whatever the task's difficulty.
     let (model, effort) = if meta.agent == "agy" {
         // agy::choose(agy::MODELS[0], None)
-        agy::choose(agy::GEMINI, None) // Gemini by default (user 2026-11-12)
+        // agy::choose(agy::GEMINI, None) // Gemini by default (user 2026-11-12)
+        // A review is judgement work: Argon while its bucket allows, else Hydrogen (agy.rs).
+        let usage = quota::Usage::cached(home);
+        let d = meta.difficulty.clamp(1, 4);
+        agy::policy(&agy::tiers("review", d), |model| {
+            route::agy_allowed(&usage, model, d)
+        })
     } else {
         (codex::MODEL.into(), Some(codex::EFFORT.into()))
     };

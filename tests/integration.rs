@@ -605,7 +605,7 @@ fn agy_verified_worker_agent_and_exact_exclusion() {
     assert!(String::from_utf8_lossy(&changed.stdout).contains(".agents/plugins/tracked.md"));
     let task = f.task("agy");
     let args = fs::read_to_string(task.join("agy-argv.txt")).unwrap();
-    // Gemini by default (user 2026-11-12), at the highest effort `agy models` lists.
+    // Argon for judgement work (user 2026-11-13), at the highest effort `agy models` lists.
     assert_eq!(
         args.lines().collect::<Vec<_>>(),
         vec![
@@ -617,7 +617,8 @@ fn agy_verified_worker_agent_and_exact_exclusion() {
             "baton-worker",
             "--model",
             // "claude-opus-4-6-thinking",
-            "gemini-3.8-flash",
+            // "gemini-3.8-flash",
+            "gemini-4-argon",
             "--effort",
             "high",
             "--mode",
@@ -630,7 +631,8 @@ fn agy_verified_worker_agent_and_exact_exclusion() {
     );
     // assert_eq!(result["model"], "claude-opus-4-6-thinking");
     // assert_eq!(result["effort"], "");
-    assert_eq!(result["model"], "gemini-3.8-flash");
+    // assert_eq!(result["model"], "gemini-3.8-flash");
+    assert_eq!(result["model"], "gemini-4-argon");
     assert_eq!(result["effort"], "high");
     assert!(task.join("agy-closed").exists());
     assert_eq!(f.read("agy", "meta.json")["thread_id"], "fake-agy");
@@ -639,10 +641,20 @@ fn agy_verified_worker_agent_and_exact_exclusion() {
     assert_eq!(turn["event"], "user");
     // The first message names the absolute workspace root before the brief.
     let root = wt.to_str().unwrap();
+    // assert_eq!(
+    //     turn["message"]["content"],
+    //     format!(
+    //         "Workspace root: {root}\nEvery path in this brief is relative to {root}. Never list, search or read anything outside it.\n\n{}",
+    //         fs::read_to_string(task.join("brief.md")).unwrap()
+    //     )
+    // );
+    let plugins = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(".gemini/config/plugins");
     assert_eq!(
         turn["message"]["content"],
         format!(
-            "Workspace root: {root}\nEvery path in this brief is relative to {root}. Never list, search or read anything outside it.\n\n{}",
+            "Workspace root: {root}\nEvery path in this brief is relative to {root}. Never list, search or read anything outside it, except a skill's SKILL.md and the files it links to under {}.\n\n{}",
+            plugins.display(),
             fs::read_to_string(task.join("brief.md")).unwrap()
         )
     );
@@ -693,10 +705,42 @@ fn agy_falls_back_to_the_next_listed_model() {
     }
     // agy refuses --effort for a Claude model, so an explicit one is dropped there.
     // let out = run_agy(&f, "opus", "Write a file", "true", &["--effort", "low"]);
-    let out = run_agy(&f, "opus", "Write a file", "true", &["--model", "claude-opus-4-6-thinking", "--effort", "low"]); // Opus only on request since 2026-11-12
+    // let out = run_agy(&f, "opus", "Write a file", "true", &["--model", "claude-opus-4-6-thinking", "--effort", "low"]); // Opus only on request since 2026-11-12
+    // code(&out, 0);
+    // let args = fs::read_to_string(f.task("opus").join("agy-argv.txt")).unwrap();
+    // assert!(args.contains("--model\nclaude-opus-4-6-thinking\n") && !args.contains("--effort"));
+    // agy refuses --effort for a model it lists bare, so an explicit one is dropped there.
+    let out = run_agy(&f, "bare", "Write a file", "true", &["--model", "gpt-oss-120b-medium", "--effort", "low"]);
     code(&out, 0);
-    let args = fs::read_to_string(f.task("opus").join("agy-argv.txt")).unwrap();
-    assert!(args.contains("--model\nclaude-opus-4-6-thinking\n") && !args.contains("--effort"));
+    let args = fs::read_to_string(f.task("bare").join("agy-argv.txt")).unwrap();
+    assert!(args.contains("--model\ngpt-oss-120b-medium\n") && !args.contains("--effort"));
+    // Pro plan (2026-11-13): tool work runs Hydrogen at its highest effort, xhigh; the caller's
+    // --model and --effort win.
+    for (id, goal, extra, model, effort) in [
+        ("tool", "Rename the widget", vec![], "gemini-4-hydrogen", "xhigh"),
+        ("judge", "Write a file", vec!["--effort", "medium"], "gemini-4-argon", "medium"),
+        ("pick", "Rename the widget", vec!["--model", "gemini-4-argon"], "gemini-4-argon", "high"),
+    ] {
+        let out = run_agy(&f, id, goal, "true", &extra);
+        code(&out, 0);
+        let args = fs::read_to_string(f.task(id).join("agy-argv.txt")).unwrap();
+        assert!(args.contains(&format!("--model\n{model}\n--effort\n{effort}\n")), "{id} {args}");
+    }
+    // Argon's weekly bucket used up: Hydrogen stands in.
+    fs::write(
+        f.home.join("usage.json"),
+        serde_json::json!({"agy":{"windows":[
+            {"id":"gemini-argon-wtu-weekly","used":1.0},
+            {"id":"gemini-weekly","used":0.1},
+            {"id":"gemini-5h","used":0.1}
+        ]}})
+        .to_string(),
+    )
+    .unwrap();
+    let out = run_agy(&f, "spent", "Write a file", "true", &[]);
+    code(&out, 0);
+    assert_eq!(json(&out)["model"], "gemini-4-hydrogen");
+    assert_eq!(json(&out)["effort"], "xhigh");
 }
 
 #[test]
@@ -906,10 +950,16 @@ fn worker_environment_allowlist_and_agy_read_tools() {
     assert!(args.ends_with(&format!("--add-dir\n{repo}\n")));
     let turns = fs::read_to_string(f.task("env-agy").join("agy-turns.jsonl")).unwrap();
     let turn: Value = serde_json::from_str(turns.trim()).unwrap();
+    // assert!(turn["message"]["content"]
+    //     .as_str()
+    //     .unwrap()
+    //     .starts_with(&format!("Workspace root: {repo}\nEvery path in this brief is relative to {repo}. Never list, search or read anything outside it.\nFiles in scope:\n- {repo}/src/lib.rs\n\n## Goal\n")));
+    // Skill files of the installed agy plugins stay readable (2026-11-13).
+    let plugins = user.join(".gemini/config/plugins");
     assert!(turn["message"]["content"]
         .as_str()
         .unwrap()
-        .starts_with(&format!("Workspace root: {repo}\nEvery path in this brief is relative to {repo}. Never list, search or read anything outside it.\nFiles in scope:\n- {repo}/src/lib.rs\n\n## Goal\n")));
+        .starts_with(&format!("Workspace root: {repo}\nEvery path in this brief is relative to {repo}. Never list, search or read anything outside it, except a skill's SKILL.md and the files it links to under {}.\nFiles in scope:\n- {repo}/src/lib.rs\n\n## Goal\n", plugins.display())));
     for (task, file) in [
         ("env-codex", "environment.txt"),
         ("env-agy", "agy-environment.txt"),
@@ -1098,9 +1148,11 @@ fn route_json_human_output_overrides_and_cached_quotas() {
 #[test]
 fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
     // No 3p bucket in the cache, so agy routes to Gemini at its highest listed effort.
+    // No Argon bucket in the cache, so agy routes to Hydrogen at its highest listed effort.
     for (agent, codex_used, model, effort) in [
         ("codex", 0.1, "gpt-6-astra", "xhigh"),
-        ("agy", 0.96, "gemini-3.8-flash", "high"),
+        // ("agy", 0.96, "gemini-3.8-flash", "high"),
+        ("agy", 0.96, "gemini-4-hydrogen", "xhigh"),
     ] {
         let f = Fixture::new();
         cache_usage(&f, codex_used);
