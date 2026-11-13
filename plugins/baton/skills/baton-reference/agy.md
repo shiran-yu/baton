@@ -425,6 +425,13 @@ Built-in termination checks run after hooks.json hooks [C]. `/btw` side question
 - **Through a command:** `run_command baton ask …` needs a `command(baton)` allow rule.
 - `ask_question` is useless in headless: the agent settles the choice itself.
 
+### 6.5 Image generation [M, 2026-11-13, agy 1.5.7]
+- **Works in headless:** asked for an image in `-p`, the agent hands it to the built-in `image-generator` subagent (`invoke_subagent`, seen in `stream-json`). One flat three-box test diagram took about 20 s and came out as a 1376 × 768 JPEG.
+- **Where the file lands:** in the conversation's app-data folder, `~/.gemini/antigravity-cli/brain/<conversation_id>/<name>_<n>.jpg`, not in the workspace. Copying it into cwd needs a read outside the workspace, which headless soft-denies (`a tool required the "read_file" permission`). Have the lead copy it from the path in the final message, or add that folder with `--add-dir`.
+- **Ignore the agent's own report of the model and size.** It answered "Imagen 3, 1792 × 1024"; the file was 1376 × 768. Read the file to get the real values.
+- **Quota:** the orchestrating model follows 2.1. On 2026-11-13 Argon was at 0 % and the run used Flash. `--sandbox` with `--mode accept-edits` was enough, and no dangerous flag was needed.
+- **Codex** generates images too (`codex.md`, Image generation). Codex saves into the workspace and agy does not.
+
 ---
 
 ## 7. Pitfalls (ranked by impact on baton)
