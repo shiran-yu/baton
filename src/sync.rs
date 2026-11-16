@@ -62,6 +62,9 @@ struct Inventory {
 struct Installation {
     #[serde(rename = "installPath")]
     path: PathBuf,
+    // Claude Code writes no version for a plugin that declares none (it caches it by commit); filled from the
+    // install folder's name below
+    #[serde(default)]
     version: String,
 }
 #[derive(Deserialize)]
@@ -83,7 +86,12 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
         )
         .join(".claude/plugins"),
     };
-    let inventory: Inventory = paths::read_json(&plugins.join("installed_plugins.json"))?;
+    let mut inventory: Inventory = paths::read_json(&plugins.join("installed_plugins.json"))?;
+    for entry in inventory.plugins.values_mut().flatten() {
+        if entry.version.is_empty() {
+            entry.version = entry.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        }
+    }
     let mut marketplaces: BTreeMap<String, Marketplace> =
         paths::read_json(&plugins.join("known_marketplaces.json"))?;
     // an empty location would resolve catalog paths against the current directory
