@@ -839,6 +839,7 @@ fn review(home: &Path, task: &str, by: String) -> Res<i32> {
         // agy::choose(agy::MODELS[0], None)
         // agy::choose(agy::GEMINI, None) // Gemini by default (user 2026-11-12)
         // A review is judgement work: Argon while its bucket allows, else Hydrogen (agy.rs).
+        // Since 2026-11-18: Argon, else Neon, else Hydrogen, as for every task.
         let usage = quota::Usage::cached(home);
         let d = meta.difficulty.clamp(1, 4);
         agy::policy(&agy::tiers("review", d), |model| {

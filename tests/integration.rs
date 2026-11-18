@@ -716,8 +716,10 @@ fn agy_falls_back_to_the_next_listed_model() {
     assert!(args.contains("--model\ngpt-oss-120b-medium\n") && !args.contains("--effort"));
     // Pro plan (2026-11-13): tool work runs Hydrogen at its highest effort, xhigh; the caller's
     // --model and --effort win.
+    // Since 2026-11-18 tool work runs Argon first too, at its highest effort, high.
     for (id, goal, extra, model, effort) in [
-        ("tool", "Rename the widget", vec![], "gemini-4-hydrogen", "xhigh"),
+        // ("tool", "Rename the widget", vec![], "gemini-4-hydrogen", "xhigh"),
+        ("tool", "Rename the widget", vec![], "gemini-4-argon", "high"),
         ("judge", "Write a file", vec!["--effort", "medium"], "gemini-4-argon", "medium"),
         ("pick", "Rename the widget", vec!["--model", "gemini-4-argon"], "gemini-4-argon", "high"),
     ] {
@@ -739,7 +741,9 @@ fn agy_falls_back_to_the_next_listed_model() {
     .unwrap();
     let out = run_agy(&f, "spent", "Write a file", "true", &[]);
     code(&out, 0);
-    assert_eq!(json(&out)["model"], "gemini-4-hydrogen");
+    // assert_eq!(json(&out)["model"], "gemini-4-hydrogen");
+    // Since 2026-11-18: Neon stands in, at xhigh.
+    assert_eq!(json(&out)["model"], "gemini-4-neon");
     assert_eq!(json(&out)["effort"], "xhigh");
 }
 
@@ -1149,10 +1153,12 @@ fn route_json_human_output_overrides_and_cached_quotas() {
 fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
     // No 3p bucket in the cache, so agy routes to Gemini at its highest listed effort.
     // No Argon bucket in the cache, so agy routes to Hydrogen at its highest listed effort.
+    // Since 2026-11-18: to Neon, the next of the chain, at xhigh.
     for (agent, codex_used, model, effort) in [
         ("codex", 0.1, "gpt-6-astra", "xhigh"),
         // ("agy", 0.96, "gemini-3.8-flash", "high"),
-        ("agy", 0.96, "gemini-4-hydrogen", "xhigh"),
+        // ("agy", 0.96, "gemini-4-hydrogen", "xhigh"),
+        ("agy", 0.96, "gemini-4-neon", "xhigh"),
     ] {
         let f = Fixture::new();
         cache_usage(&f, codex_used);

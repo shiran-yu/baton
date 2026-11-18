@@ -74,12 +74,12 @@ cd "$WORKTREE" && agy -p "$PROMPT" \
   --agent "$AGENT" --model gemini-4-argon --effort high \
   --output-format stream-json --print-timeout 15m </dev/null 2>"$RUN/stderr" >"$RUN/events.ndjson"
 ```
-- **Model and effort (user's policy, 2026-11-13, Pro plan; code: `src/agy.rs`):**
-  - Argon (`gemini-4-argon`) is the top tier, the counterpart of Claude's strongest model: judgement work (reviews, design-sensitive edits, implement/refactor/bugfix/test from D2) runs on it whenever its weekly bucket allows. When Argon is used up, Hydrogen (`gemini-4-hydrogen`) stands in.
-  - Hydrogen is Sonnet's counterpart: tool work (mechanical, docs, research sweeps and extraction, any D1 task) runs on it.
-  - Every model runs at the highest effort `agy models` lists for it as `<model>-<effort>`: Argon `high` (listed low/medium/high), Hydrogen `xhigh` (listed low to xhigh), so an `argon-xhigh` listed later is picked up. Gemini 3.8 Flash at its highest (`high`) is the last fallback, when neither is listed or neither has quota.
-  - The caller's `--model` and `--effort` win; a model listed bare (`gpt-oss-120b-medium`) gets no `--effort`. Claude Opus/Sonnet 5.5 (3p buckets) run only when `--model` names them. Argon is the preferred model for polishing paper prose (read-only suggestions the lead verifies).
+- **Model and effort (user's policy, 2026-11-18, Pro plan; code: `src/agy.rs`):**
+  - One chain for every task, strongest first: Argon (`gemini-4-argon`, the flagship) whenever its weekly bucket allows; then Neon (`gemini-4-neon`, close to Argon on code and multi-step reasoning); then Hydrogen (`gemini-4-hydrogen`, the light, fast model). Until 2026-11-18 tool work (mechanical, docs, research, D1) went to Hydrogen and judgement work to Argon, else Hydrogen.
+  - Every model runs at the highest effort `agy models` lists for it as `<model>-<effort>`: Argon `high` (listed low/medium/high), Neon and Hydrogen `xhigh` (listed low to xhigh), so an `argon-xhigh` listed later is picked up. Gemini 3.8 Flash at its highest (`high`) is the last fallback, when none is listed or none has quota.
+  - The caller's `--model` and `--effort` win; a model listed bare (`gpt-oss-120b-medium`) gets no `--effort`. Claude Opus/Sonnet 5.5 (3p buckets) run only when `--model` names them.
   - `agy models` on 2026-11-13 (agy 1.5.7, Linux aarch64): `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`, `gemini-pro-orchestrator-g1-pro` (the TUI default "Orchestrator (Argon)"), `gemini-3.8-flash-{low,medium,high}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}`, `gpt-oss-120b-medium`. The 4.6 models of 2026-10-29 are gone.
+  - `agy models` on 2026-11-18 (WSL x86_64) adds `gemini-4-neon-{low,medium,high,xhigh}` and `gemini-pro-orchestrator-neon`.
 - **Skill files are outside the workspace [M, 2026-11-13]:** baton's first message forbids reading outside the root *except* a skill's SKILL.md and the files it links to under `~/.gemini/config/plugins/`. Without that exception Hydrogen at `medium` obeyed the prompt and refused to open the skill; Argon and Hydrogen at `high`/`xhigh` opened it anyway.
 - **Always `</dev/null`** (or a pipe you control). With no creds, agy waits 60 s on the controlling TTY for an OAuth code [M].
 - **cwd is the workspace.** Workspace reads and writes are auto-allowed only under cwd and `--add-dir` roots. `.agents/` customizations are found by walking up from cwd to the repo root. An untrusted `/private/tmp` workspace still loaded `.agents/agents/*.md` [M].
@@ -236,7 +236,7 @@ Claude and GPT models	Weekly Limit Remaining	100%	2026-10-26T13:40:49Z
 
   | Group | Bucket `id` | `window` | Meters |
   |---|---|---|---|
-  | Gemini Models | `gemini-weekly`, `gemini-5h` | `weekly`, `5h` | Hydrogen, Flash |
+  | Gemini Models | `gemini-weekly`, `gemini-5h` | `weekly`, `5h` | Neon (from 2026-11-18), Hydrogen, Flash |
   | Claude and GPT models | `3p-weekly`, `3p-5h` | `weekly`, `5h` | Claude Opus/Sonnet 5.5, GPT-OSS |
   | Gemini 4 Argon | `gemini-argon-wtu-weekly` | `weekly` | Argon (separate on Pro; part of the Gemini bucket on Ultra) |
 

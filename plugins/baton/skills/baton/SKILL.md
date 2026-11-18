@@ -28,19 +28,19 @@ Follow the route unless you know better; say why if you override it.
 
 Every worker runs at its highest effort, with the user's own plugins and skills (user, 2026-10-29:
 reliability over cost): Codex `gpt-6-astra` at `xhigh` with the user's `~/.codex/config.toml`.
-agy picks its model by the user's tiers (2026-11-13, Pro plan):
+agy picks its model by the user's priority (2026-11-18, Pro plan), the same chain for every task,
+strongest first:
 
-- **Argon** (`gemini-4-argon`, the counterpart of Claude's strongest model) takes judgement work
-  (reviews, design-sensitive edits, implement, refactor, bugfix and test from D2) whenever its own
-  weekly bucket `gemini-argon-wtu-weekly` allows; when Argon is used up, **Hydrogen** stands in.
-- **Hydrogen** (`gemini-4-hydrogen`, Sonnet's counterpart) takes tool work: mechanical edits, docs,
-  read-only sweeps and extraction, any D1 task. It draws on the Gemini group's `gemini-5h` and
-  `gemini-weekly`.
-- Each model runs at the highest effort `agy models` lists for it (Argon `high`, Hydrogen `xhigh`
-  today); Gemini 3.8 Flash at its highest is the last fallback. Your `--model` and `--effort` win;
-  agy's Claude models run only when `--model` names one.
-- Argon is the preferred agy model for polishing paper prose (read-only suggestions you verify):
-  pass `--model gemini-4-argon` when such a brief would classify as docs or research.
+1. **Argon** (`gemini-4-argon`, the flagship) whenever its own weekly bucket
+   `gemini-argon-wtu-weekly` allows.
+2. **Neon** (`gemini-4-neon`, close to Argon on code and multi-step reasoning) when Argon is used up.
+3. **Hydrogen** (`gemini-4-hydrogen`, the light, fast model) when Neon is unavailable.
+
+- Neon and Hydrogen draw on the Gemini group's `gemini-5h` and `gemini-weekly`, so when that group
+  is used up both are out together.
+- Each model runs at the highest effort `agy models` lists for it (Argon `high`, Neon and Hydrogen
+  `xhigh` today); Gemini 3.8 Flash at its highest is the last fallback. Your `--model` and
+  `--effort` win; agy's Claude models run only when `--model` names one.
 
 `baton route` and `baton run agy` without `--model` apply these tiers, each model gated by the
 tightest bucket that meters it. Routing picks the worker, never a weaker model or effort. Do not

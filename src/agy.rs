@@ -50,26 +50,34 @@ pub struct Agy {
 // - Hydrogen is Sonnet's counterpart: tool work (mechanical, docs, research sweeps, D1) runs on it.
 // - Every model runs at the highest effort `agy models` lists for it (Argon high, Hydrogen xhigh
 //   today); Flash, at its highest, is the last fallback. The caller's --model and --effort win.
+// Superseded 2026-11-18 (user): one chain for all work, strongest first: Argon (own weekly bucket),
+// then Neon, then Hydrogen (both on the Gemini group's buckets), then Flash; each at its highest
+// listed effort (Argon high, Neon and Hydrogen xhigh today).
 pub const ARGON: &str = "gemini-4-argon";
+pub const NEON: &str = "gemini-4-neon";
 pub const HYDROGEN: &str = "gemini-4-hydrogen";
 pub const FLASH: &str = "gemini-3.8-flash";
 // Strongest first: a model agy does not list falls back to the next one it does.
-pub const MODELS: [&str; 3] = [ARGON, HYDROGEN, FLASH];
+// pub const MODELS: [&str; 3] = [ARGON, HYDROGEN, FLASH];
+pub const MODELS: [&str; 4] = [ARGON, NEON, HYDROGEN, FLASH];
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-/// Tool-like work goes to Hydrogen; a review is always judgement.
-pub fn tool_work(task_type: &str, difficulty: u8) -> bool {
-    task_type != "review"
-        && (["mechanical", "docs", "research"].contains(&task_type) || difficulty <= 1)
-}
+// Tool-like work went to Hydrogen until 2026-11-18; a review is always judgement.
+// pub fn tool_work(task_type: &str, difficulty: u8) -> bool {
+//     task_type != "review"
+//         && (["mechanical", "docs", "research"].contains(&task_type) || difficulty <= 1)
+// }
 
-/// The policy's models for a task, preferred first.
-pub fn tiers(task_type: &str, difficulty: u8) -> Vec<&'static str> {
-    if tool_work(task_type, difficulty) {
-        vec![HYDROGEN]
-    } else {
-        vec![ARGON, HYDROGEN]
-    }
+/// The policy's models for a task, preferred first: the same chain for every task (2026-11-18).
+// pub fn tiers(task_type: &str, difficulty: u8) -> Vec<&'static str> {
+//     if tool_work(task_type, difficulty) {
+//         vec![HYDROGEN]
+//     } else {
+//         vec![ARGON, HYDROGEN]
+//     }
+// }
+pub fn tiers(_task_type: &str, _difficulty: u8) -> Vec<&'static str> {
+    vec![ARGON, NEON, HYDROGEN]
 }
 
 /// Whether a `/usage` bucket meters a model. On Pro, Argon has its own weekly bucket; the other
@@ -868,6 +876,8 @@ mod tests {
     }
     // `agy models` on 2026-11-13 (Pro plan).
     const PRO: &str = "gemini-4-argon-medium gemini-4-argon-high gemini-4-argon-low gemini-4-hydrogen-high gemini-4-hydrogen-xhigh gemini-4-hydrogen-medium gemini-4-hydrogen-low gemini-pro-orchestrator-g1-pro gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-opus-5-5-low claude-opus-5-5-medium claude-opus-5-5-high claude-sonnet-5-5-low claude-sonnet-5-5-medium claude-sonnet-5-5-high gpt-oss-120b-medium";
+    // `agy models` on 2026-11-18 (Pro plan): Neon added.
+    const PRO_NEON: &str = "gemini-4-neon-high gemini-4-neon-xhigh gemini-4-neon-medium gemini-4-neon-low gemini-4-argon-medium gemini-4-argon-high gemini-4-argon-low gemini-4-hydrogen-high gemini-4-hydrogen-xhigh gemini-4-hydrogen-medium gemini-4-hydrogen-low gemini-pro-orchestrator-neon gemini-pro-orchestrator-g1-pro gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-opus-5-5-low claude-opus-5-5-medium claude-opus-5-5-high claude-sonnet-5-5-low claude-sonnet-5-5-medium claude-sonnet-5-5-high gpt-oss-120b-medium";
 
     #[test]
     fn explicit_model_falls_back_at_its_highest_listed_effort() {
@@ -876,6 +886,9 @@ mod tests {
         let some = |m: &str, e: &str| (m.to_string(), Some(e.to_string()));
         assert_eq!(pick(ARGON, None, &pro), some(ARGON, "high"));
         assert_eq!(pick(HYDROGEN, None, &pro), some(HYDROGEN, "xhigh"));
+        assert_eq!(pick(NEON, None, &list(PRO_NEON)), some(NEON, "xhigh"));
+        // Neon not listed (2026-11-13): Hydrogen, the next of MODELS.
+        assert_eq!(pick(NEON, None, &pro), some(HYDROGEN, "xhigh"));
         // An argon-xhigh listed later is picked up; the caller's effort wins.
         let later = list(&format!("{PRO} gemini-4-argon-xhigh"));
         assert_eq!(pick(ARGON, None, &later), some(ARGON, "xhigh"));
@@ -902,17 +915,26 @@ mod tests {
 
     #[test]
     fn policy_tiers_quota_and_last_fallback() {
-        let pro = list(PRO);
+        // let pro = list(PRO);
+        let pro = list(PRO_NEON);
         let some = |m: &str, e: &str| (m.to_string(), Some(e.to_string()));
         let all = |_: &str| true;
         let judgement = tiers("implement", 2);
         assert_eq!(first(&judgement, all, &pro), some(ARGON, "high"));
         assert_eq!(first(&tiers("review", 1), all, &pro), some(ARGON, "high"));
         // Argon used up: Hydrogen stands in, at its highest effort.
-        assert_eq!(first(&judgement, |m: &str| m != ARGON, &pro), some(HYDROGEN, "xhigh"));
+        // assert_eq!(first(&judgement, |m: &str| m != ARGON, &pro), some(HYDROGEN, "xhigh"));
+        // for (kind, d) in [("mechanical", 1), ("docs", 1), ("research", 2), ("bugfix", 1)] {
+        //     assert_eq!(first(&tiers(kind, d), all, &pro), some(HYDROGEN, "xhigh"), "{kind}");
+        // }
+        // Since 2026-11-18 tool work takes the same chain; Argon used up: Neon, then Hydrogen.
         for (kind, d) in [("mechanical", 1), ("docs", 1), ("research", 2), ("bugfix", 1)] {
-            assert_eq!(first(&tiers(kind, d), all, &pro), some(HYDROGEN, "xhigh"), "{kind}");
+            assert_eq!(first(&tiers(kind, d), all, &pro), some(ARGON, "high"), "{kind}");
         }
+        assert_eq!(first(&judgement, |m: &str| m != ARGON, &pro), some(NEON, "xhigh"));
+        assert_eq!(first(&judgement, |m: &str| m == HYDROGEN, &pro), some(HYDROGEN, "xhigh"));
+        // Neon not listed (the 2026-11-13 list): Hydrogen after Argon.
+        assert_eq!(first(&judgement, |m: &str| m != ARGON, &list(PRO)), some(HYDROGEN, "xhigh"));
         // Neither listed, or no quota for either: Flash at its highest.
         let flash = list("gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low");
         assert_eq!(first(&judgement, all, &flash), some(FLASH, "high"));
@@ -922,6 +944,7 @@ mod tests {
         assert!(meters(ARGON, "gemini-argon-wtu-weekly") && !meters(ARGON, "gemini-weekly"));
         for bucket in ["gemini-weekly", "gemini-5h"] {
             assert!(meters(HYDROGEN, bucket) && meters(FLASH, bucket) && !meters(ARGON, bucket));
+            assert!(meters(NEON, bucket));
         }
         assert!(meters(HYDROGEN, "gemini-weekly") && !meters(HYDROGEN, "gemini-argon-wtu-weekly"));
         assert!(meters("claude-opus-5-5", "3p-5h") && !meters("claude-opus-5-5", "gemini-5h"));

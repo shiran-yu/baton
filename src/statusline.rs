@@ -39,7 +39,7 @@ fn quota(snapshot: &usage::Snapshot, agent: &str, compact: bool) -> String {
         .map(|s| {
             s.windows
                 .iter()
-                // agy: Argon and the Gemini group (Hydrogen, Flash); routing never uses the 3p group.
+                // agy: Argon and the Gemini group (Neon, Hydrogen, Flash); routing never uses the 3p group.
                 .filter(|w| agent != "agy" || w.window.starts_with("gemini-"))
                 .map(|w| {
                     // let name = match w.window.as_str() {
