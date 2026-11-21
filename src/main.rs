@@ -385,6 +385,13 @@ fn start(home: &Path, mut run: cli::Run) -> Res<i32> {
             agy::choose(&run.model, run.effort)
         };
     }
+    if run.agent == "codex" && run.model.is_empty() {
+        // No --model: the strongest model the account lists, at its highest effort; --effort wins.
+        fresh_usage(home);
+        let (model, effort) = quota::Usage::cached(home).codex_model();
+        run.model = model;
+        run.effort = run.effort.or(Some(effort));
+    }
     // Copilot reads the same folder as Codex in read mode: the git root, else the current folder.
     let read_folder: Option<PathBuf> = None;
     let detected_root = if let Some(folder) = &read_folder {
@@ -846,7 +853,9 @@ fn review(home: &Path, task: &str, by: String) -> Res<i32> {
             route::agy_allowed(&usage, model, d)
         })
     } else {
-        (codex::MODEL.into(), Some(codex::EFFORT.into()))
+        // (codex::MODEL.into(), Some(codex::EFFORT.into()))
+        let (model, effort) = quota::Usage::cached(home).codex_model();
+        (model, Some(effort))
     };
     meta.model = model;
     meta.effort = effort.unwrap_or_default();

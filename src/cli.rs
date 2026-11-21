@@ -226,6 +226,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                 // "agy" => (crate::agy::MODELS[0].into(), None),
                 // "agy" => (crate::agy::GEMINI.into(), None), // Gemini by default (user 2026-11-12); --model picks a Claude model
                 "agy" => (String::new(), None), // no --model: start() applies agy's model policy (agy.rs)
+                "codex" => (String::new(), None), // no --model: start() takes the best the account lists
                 _ => (
                     crate::codex::MODEL.into(),
                     Some(crate::codex::EFFORT.into()),
@@ -291,7 +292,9 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                 return Err(Error::usage("--mode must be edit or read"));
             }
             if let Some(effort) = &run.effort {
-                if !["low", "medium", "high", "xhigh"].contains(&effort.as_str()) {
+                // if !["low", "medium", "high", "xhigh"].contains(&effort.as_str()) {
+                // Codex lists max and ultra too (gpt-5.6-terra, 2026-11-21)
+                if !["low", "medium", "high", "xhigh", "max", "ultra"].contains(&effort.as_str()) {
                     return Err(Error::usage("invalid --effort"));
                 }
                 // Gemini 4 Hydrogen lists xhigh (2026-11-13); agy refuses a level a model lacks.
@@ -300,7 +303,8 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                 // }
             }
             // if run.model.is_empty() || run.base.is_empty() || run.base.starts_with('-') {
-            if (run.model.is_empty() && run.agent != "agy")
+            // if (run.model.is_empty() && run.agent != "agy")
+            if (run.model.is_empty() && run.agent != "agy" && run.agent != "codex")
                 || run.base.is_empty()
                 || run.base.starts_with('-')
             {

@@ -1,4 +1,4 @@
-# Codex CLI for baton (codex-cli 0.163.0; workers run gpt-6-astra at xhigh)
+# Codex CLI for baton (codex-cli 0.163.0; workers run the strongest listed model at its highest effort)
 
 Raw help of every command and subcommand: `help/codex/` (77 files). Prompt composition measured
 from captured request bodies: `codex-prompt-anatomy.md`. Sources: learn.chatgpt.com/docs (CLI,

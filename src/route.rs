@@ -294,7 +294,10 @@ pub fn recommend(
     // agy since 2026-11-13 (user): the model policy's tiers in agy.rs, strongest first, each gated
     // by the buckets that meter it (Argon, else Hydrogen; tool work Hydrogen).
     // Since 2026-11-18 (user): Argon, then Neon, then Hydrogen, for every task.
-    let mut models = vec![("codex", crate::codex::MODEL)];
+    // let mut models = vec![("codex", crate::codex::MODEL)];
+    // Codex: the strongest model the account lists, at its highest effort (2026-11-21).
+    let (codex_model, codex_effort) = usage.codex_model();
+    let mut models = vec![("codex", codex_model.as_str())];
     for model in crate::agy::tiers(&class.task_type, d) {
         models.push(("agy", model));
     }
@@ -320,7 +323,8 @@ pub fn recommend(
         };
         // agy's effort is the highest `agy models` lists, found at run time.
         let effort = match agent {
-            "codex" => Some(crate::codex::EFFORT.into()),
+            // "codex" => Some(crate::codex::EFFORT.into()),
+            "codex" => Some(codex_effort.clone()),
             "copilot" => Some(["low", "medium", "high", "xhigh"][(d - 1) as usize].into()),
             _ => None,
         };

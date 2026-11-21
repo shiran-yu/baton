@@ -25,6 +25,16 @@ impl Usage {
         )
     }
 
+    /// Codex's model and effort: the strongest the account lists (cached by `baton usage`), else
+    /// codex::MODEL at codex::EFFORT.
+    pub fn codex_model(&self) -> (String, String) {
+        let s = self.source("codex");
+        match (s["model"].as_str(), s["effort"].as_str()) {
+            (Some(model), Some(effort)) => (model.into(), effort.into()),
+            _ => (crate::codex::MODEL.into(), crate::codex::EFFORT.into()),
+        }
+    }
+
     pub(crate) fn source(&self, agent: &str) -> &Value {
         let root = self
             .0
@@ -212,6 +222,15 @@ fn windows(source: &Value) -> Vec<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn codex_model_comes_from_the_cache_else_the_constants() {
+        let cached = Usage(json!({"fetched_at": 1, "agents": [
+            {"agent": "codex", "plan_type": "free", "model": "gpt-5.6-terra", "effort": "ultra"}]}));
+        assert_eq!(cached.codex_model(), ("gpt-5.6-terra".into(), "ultra".into()));
+        let old = Usage(json!({"fetched_at": 1, "agents": [{"agent": "codex", "windows": []}]}));
+        assert_eq!(old.codex_model(), (crate::codex::MODEL.into(), crate::codex::EFFORT.into()));
+        assert_eq!(Usage(Value::Null).codex_model().0, crate::codex::MODEL);
+    }
     #[test]
     fn raw_fixture_limits_and_buckets() {
         let mut usage = Usage(json!({

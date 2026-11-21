@@ -18,8 +18,36 @@ use std::{
 
 pub const SCHEMA: &str = include_str!("../plugins/baton/schema/worker-result.json");
 // The strongest model in `codex debug models` (2026-10-29) at xhigh, as in the user's own config.
+// Since 2026-11-21 only the fallback when the account's `model/list` is not cached (see best).
 pub const MODEL: &str = "gpt-6-astra";
 pub const EFFORT: &str = "xhigh";
+// Strongest first (user 2026-11-21: the best the plan offers, at its highest effort). The free plan
+// lists gpt-6-luna, gpt-5.6-terra and gpt-5.6-luna; Terra leads 6-Luna on coding indexes
+// (Artificial Analysis Coding Agent 77 vs 75, BenchLM 68.4 vs 61.2). Add a new top model here.
+pub const MODELS: [&str; 5] = [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-6-luna",
+    "gpt-5.6-luna",
+];
+const EFFORTS: [&str; 7] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+/// From app-server `model/list` data: the first of MODELS the account lists, else its default
+/// model, at the highest effort that model supports.
+pub fn best(data: &Value) -> Option<(String, String)> {
+    let listed = data.as_array()?;
+    let model = MODELS
+        .iter()
+        .find_map(|id| listed.iter().find(|m| m["id"] == *id))
+        .or_else(|| listed.iter().find(|m| m["isDefault"] == true))?;
+    let effort = model["supportedReasoningEfforts"]
+        .as_array()?
+        .iter()
+        .filter_map(|e| e["reasoningEffort"].as_str())
+        .max_by_key(|e| EFFORTS.iter().position(|x| x == e))?;
+    Some((model["id"].as_str()?.into(), effort.into()))
+}
 
 pub fn kill_group(child: &mut Child) {
     // A separate process group includes shells and grandchildren, without unsafe libc calls.
@@ -569,7 +597,38 @@ pub fn shell(
 
 #[cfg(test)]
 mod tests {
-    use super::tmp_is_bind;
+    // use super::tmp_is_bind;
+    use super::{best, tmp_is_bind};
+    use serde_json::json;
+
+    fn listed(models: &[(&str, &[&str], bool)]) -> serde_json::Value {
+        json!(models
+            .iter()
+            .map(|(id, efforts, default)| json!({"id": id, "isDefault": default,
+                "supportedReasoningEfforts": efforts.iter().map(|e| json!({"reasoningEffort": e})).collect::<Vec<_>>()}))
+            .collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn best_takes_the_strongest_listed_model_at_its_highest_effort() {
+        // the free plan's list on 2026-11-21
+        let free = listed(&[
+            ("gpt-6-luna", &["low", "medium", "high", "xhigh", "max"], true),
+            ("gpt-5.6-terra", &["low", "medium", "high", "xhigh", "max", "ultra"], false),
+            ("gpt-5.6-luna", &["low", "medium", "high", "xhigh", "max"], false),
+        ]);
+        assert_eq!(best(&free), Some(("gpt-5.6-terra".into(), "ultra".into())));
+        // a plan that lists astra takes it, whatever the order of the efforts
+        let plus = listed(&[
+            ("gpt-6-luna", &["low", "max"], true),
+            ("gpt-6-astra", &["xhigh", "low", "high"], false),
+        ]);
+        assert_eq!(best(&plus), Some(("gpt-6-astra".into(), "xhigh".into())));
+        // none of MODELS listed: the account's default
+        let other = listed(&[("gpt-7-nova", &["high"], false), ("gpt-7-mini", &["low", "medium"], true)]);
+        assert_eq!(best(&other), Some(("gpt-7-mini".into(), "medium".into())));
+        assert_eq!(best(&json!(null)), None);
+    }
 
     #[test]
     fn polyinstantiated_tmp_is_detected() {

@@ -262,7 +262,9 @@ Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lin
 - Hard rules: risky briefs go to the lead; D4 or no acceptance commands go to the lead; a worker
   whose remaining quota is below the task's expected cost is skipped.
 - Quota and task type pick the worker; model and effort are always that worker's best (§5),
-  whatever the difficulty (user, 2026-10-29). Codex: `gpt-6-astra` at `xhigh`. agy: the model
+  whatever the difficulty (user, 2026-10-29). Codex: the first of `codex::MODELS` the account's
+  `model/list` offers, at its highest listed effort, cached by `baton usage` (2026-11-21; was
+  `gpt-6-astra` at `xhigh`, which the free plan lacks). agy: the model
   policy of §5 (2026-11-18): Argon, then Neon, then Hydrogen for every task, each a
   candidate gated by its own buckets, a weaker one skipped while a stronger one is eligible, with
   the effort found at run time. Copilot keeps its own difficulty ladder.

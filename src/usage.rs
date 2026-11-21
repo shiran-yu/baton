@@ -45,6 +45,11 @@ pub struct Source {
     pub ordinary_usage_allowed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fetched_at: Option<u64>,
+    /// Codex: the strongest model the account lists and its highest effort (codex::best).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -205,7 +210,30 @@ fn live_codex() -> Res<Source> {
             )?;
             input.flush()?;
         } else if v["id"] == 2 {
-            return parse_codex(&v, paths::now(), false);
+            // return parse_codex(&v, paths::now(), false);
+            let mut source = parse_codex(&v, paths::now(), false)?;
+            // Then the models this account may run; a failure or timeout leaves codex::MODEL.
+            if let Some(input) = process.child.stdin.as_mut() {
+                let _ = writeln!(input, "{}", json!({"id":3,"method":"model/list","params":{}}));
+                let _ = input.flush();
+            }
+            let models_deadline = Instant::now() + Duration::from_secs(3);
+            while let Ok(line) = process
+                .lines
+                .recv_timeout(models_deadline.saturating_duration_since(Instant::now()))
+            {
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if v["id"] == 3 {
+                    if let Some((model, effort)) = crate::codex::best(&v["result"]["data"]) {
+                        source.model = Some(model);
+                        source.effort = Some(effort);
+                    }
+                    break;
+                }
+            }
+            return Ok(source);
         }
     }
 }

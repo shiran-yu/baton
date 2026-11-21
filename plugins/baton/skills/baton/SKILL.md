@@ -27,7 +27,9 @@ baton route --brief <file>        # worker, model, effort and the reason
 Follow the route unless you know better; say why if you override it.
 
 Every worker runs at its highest effort, with the user's own plugins and skills (user, 2026-10-29:
-reliability over cost): Codex `gpt-6-astra` at `xhigh` with the user's `~/.codex/config.toml`.
+reliability over cost): Codex the strongest model its account lists (`gpt-6-astra`, then
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-luna`; the free plan gets Terra) at that model's highest
+effort (Terra: `ultra`), read by `baton usage`, with the user's `~/.codex/config.toml`.
 agy picks its model by the user's priority (2026-11-18, Pro plan), the same chain for every task,
 strongest first:
 
