@@ -588,7 +588,8 @@ fn quick_doctor_starts_one_background_sync_per_plugin_change() {
     fs::create_dir_all(&plugins).unwrap();
     fs::write(plugins.join("installed_plugins.json"), r#"{"plugins":{}}"#).unwrap();
     let quick = || String::from_utf8(f.call(&["doctor", "--quick"]).stdout).unwrap();
-    assert!(quick().contains("syncing them to Codex and agy in the background"));
+    // assert!(quick().contains("syncing them to Codex and agy in the background"));
+    assert!(quick().contains("syncing them to the other CLIs in the background"));
     assert_eq!(
         fs::read_to_string(f.dir.join("state/synced_plugins.json")).unwrap(),
         r#"{"plugins":{}}"#

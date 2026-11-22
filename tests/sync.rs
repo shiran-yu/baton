@@ -477,6 +477,48 @@ fn codex_replaces_an_older_copy_with_claudes_version_and_skips_my_status_bar() {
 }
 
 #[test]
+fn opencode_links_staged_skills_reloads_once_and_leaves_other_folders_alone() {
+    let f = Fixture::new();
+    f.inventory();
+    f.script("opencode", "printf '%s\\n' \"opencode $*\" >> \"$BATON_HOME/calls\"");
+    let out = f.call(&["sync", "--to", "opencode", "--only", "alpha"]);
+    success(&out);
+    assert!(String::from_utf8(out.stdout).unwrap().contains("alpha opencode: installed (1 skills)"));
+    let link = f.dir.join(".config/opencode/skills/existing");
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        f.dir.join("state/opencode-plugins/alpha/skills/existing")
+    );
+    assert!(link.join("SKILL.md").is_file());
+    // The plugin root is named right after the frontmatter.
+    let skill = fs::read_to_string(link.join("SKILL.md")).unwrap();
+    let root = f.dir.join("state/opencode-plugins/alpha");
+    assert!(skill.starts_with("---\nname: existing\ndescription: Existing skill\n---\n\nPlugin root: `"), "{skill}");
+    assert!(skill.contains(&format!("`{}`", root.display())), "{skill}");
+    assert!(skill.trim_end().ends_with("Unchanged."), "{skill}");
+    assert_eq!(f.read_json("state/opencode-plugins/alpha/.baton-sync.json")["version"], "1.2.3");
+    assert_eq!(f.calls().matches("opencode reload").count(), 1);
+    // Unchanged: nothing restaged, no reload.
+    f.write("state/calls", "");
+    let out = f.call(&["sync", "--to", "opencode", "--only", "alpha"]);
+    assert!(String::from_utf8(out.stdout).unwrap().contains("alpha opencode: up to date"));
+    assert!(!f.calls().contains("reload"));
+    // Trading plugins stay out: opencode runs none of their hooks.
+    let out = f.call(&["sync", "--to", "opencode", "--only", "trade"]);
+    assert!(String::from_utf8(out.stdout).unwrap().contains("trade opencode: skipped (opencode runs no Claude hooks"));
+    // A folder of the user's own under the same name is never replaced.
+    fs::remove_file(&link).unwrap();
+    f.write(".config/opencode/skills/existing/SKILL.md", "mine");
+    let mut inventory = f.read_json("claude/installed_plugins.json");
+    inventory["plugins"]["alpha@my-develop-plugins"][0]["version"] = json!("1.2.4");
+    f.write_json("claude/installed_plugins.json", &inventory);
+    let out = f.call(&["sync", "--to", "opencode", "--only", "alpha"]);
+    success(&out);
+    assert!(String::from_utf8(out.stdout).unwrap().contains("existing: name taken"));
+    assert_eq!(fs::read_to_string(link.join("SKILL.md")).unwrap(), "mine");
+}
+
+#[test]
 fn copilot_registers_claude_marketplace_installs_once_and_honours_dry_run() {
     let f = Fixture::new();
     f.inventory();

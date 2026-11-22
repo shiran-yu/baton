@@ -25,6 +25,10 @@ impl Default for Options {
         if crate::setup::installed("copilot") {
             hosts.push("copilot".into());
         }
+        // So is opencode (user 2026-11-22: plugin updates reach every CLI).
+        if crate::setup::installed("opencode") {
+            hosts.push("opencode".into());
+        }
         Self {
             dry_run: false,
             hosts,
@@ -121,6 +125,7 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
         }
     }
     let mut failed = false;
+    let mut opencode_changed = false;
     for (id, entries) in inventory.plugins {
         let (name, market) = id
             .rsplit_once('@')
@@ -137,6 +142,8 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
                 Some("trading guards not proven for agy; use --include-trading")
             } else if host == "copilot" && market == "trading-plugins" && !options.include_trading {
                 Some("trading guards not proven for copilot; use --include-trading")
+            } else if host == "opencode" && market == "trading-plugins" && !options.include_trading {
+                Some("opencode runs no Claude hooks, so no trading guards; use --include-trading")
             } else {
                 None
             };
@@ -148,6 +155,9 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
                     codex.sync(name, market, &marketplaces, &entry.path, options.dry_run)
                 } else if host == "copilot" {
                     copilot.sync(name, market, &marketplaces, options.dry_run)
+                } else if host == "opencode" {
+                    let skills = skill_paths(&marketplaces, market, name, &entry.path);
+                    opencode(home, name, entry, &skills, options.dry_run)
                 } else {
                     // agy(home, name, entry, options.dry_run)
                     let skills = skill_paths(&marketplaces, market, name, &entry.path);
@@ -156,6 +166,9 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
             } else {
                 Err(Error::new(1, "no installation entry"))
             };
+            if host == "opencode" && outcome.as_ref().is_ok_and(|s| s.starts_with("installed")) {
+                opencode_changed = true;
+            }
             match outcome {
                 Ok(status) => println!("{name} {host}: {status}"),
                 Err(error) => {
@@ -164,6 +177,10 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
                 }
             }
         }
+    }
+    // opencode's background service caches skills until it reloads; a stopped service has nothing to reload.
+    if opencode_changed {
+        let _ = invoke("opencode", &["reload"]);
     }
     Ok(i32::from(failed))
 }
@@ -560,6 +577,8 @@ impl Copilot {
 
 // Bump when the staged layout changes: every plugin is then re-staged on the next sync.
 const CONVERTER: u64 = 2;
+// opencode's staging; bumped when its output changes (3: the plugin-root note), so copies are restaged.
+const OPENCODE_CONVERTER: u64 = 3;
 // A referenced plugin-root entry larger than this stays behind (mo-academic-taste's corpus).
 const RESOURCE_CAP: u64 = 2 << 20;
 // agy's limit on a SKILL.md body.
@@ -668,6 +687,128 @@ fn agy(
     })
 }
 
+/// opencode (user 2026-11-22): each skill Claude Code loads, staged as for agy into
+/// $BATON_HOME/opencode-plugins/<name>/ and linked into ~/.config/opencode/skills/. opencode imports
+/// no Claude hooks, agents or MCP servers, so those are not converted: hook guards do not run there.
+fn opencode(
+    home: &Path,
+    name: &str,
+    entry: &Installation,
+    skills: &[String],
+    dry: bool,
+) -> Res<String> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+    {
+        return Err(Error::new(1, "invalid opencode plugin name"));
+    }
+    let source = fs::canonicalize(&entry.path)?;
+    let staged = home.join("opencode-plugins");
+    let dest = staged.join(name);
+    let marker = dest.join(".baton-sync.json");
+    if marker.is_file() {
+        let previous: Value = paths::read_json(&marker)?;
+        if previous["version"] == entry.version
+            && previous["source"] == source.to_string_lossy().as_ref()
+            && previous["converter"] == OPENCODE_CONVERTER
+        {
+            return Ok("up to date".into());
+        }
+    }
+    if dry {
+        return Ok("skipped (dry-run; would install)".into());
+    }
+    if dest.symlink_metadata().is_ok() {
+        // Never follow a destination symlink when materializing generated files.
+        if dest.symlink_metadata()?.file_type().is_symlink() {
+            fs::remove_file(&dest)?;
+        } else {
+            fs::remove_dir_all(&dest)?;
+        }
+    }
+    fs::create_dir_all(&dest)?;
+    let mut notes = stage_skills(name, &source, &dest, skills, &dest)?;
+    let links = crate::usage::user_home().join(".config/opencode/skills");
+    fs::create_dir_all(&links)?;
+    // Links left by this plugin's earlier version to skills it no longer has.
+    for link in fs::read_dir(&links)?.flatten() {
+        if let Ok(target) = fs::read_link(link.path()) {
+            if target.starts_with(&dest) && !target.exists() {
+                fs::remove_file(link.path())?;
+            }
+        }
+    }
+    let mut folders: Vec<PathBuf> = fs::read_dir(dest.join("skills"))
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    folders.sort();
+    let mut linked = 0;
+    for folder in folders {
+        let main = folder.join("SKILL.md");
+        // A plugin-root path written as ../../ must resolve however opencode reads the link.
+        // if let Ok(text) = fs::read_to_string(&main) {
+        //     if text.contains("../../") {
+        //         fs::write(&main, text.replace("../../", &format!("{}/", dest.display())))?;
+        //     }
+        // }
+        // opencode reports the link's path, so "two directories above this SKILL.md" would miss:
+        // the plugin root is named once, right after the frontmatter.
+        if let Ok(text) = fs::read_to_string(&main) {
+            let text = text.replace("../../", &format!("{}/", dest.display()));
+            fs::write(&main, with_root_note(&text, &dest))?;
+        }
+        let Some(skill) = folder.file_name() else {
+            continue;
+        };
+        let link = links.join(skill);
+        match fs::read_link(&link) {
+            Ok(target) if target == folder => linked += 1,
+            // Another plugin's skill of the same name, or the user's own folder: left alone.
+            Ok(target) if !target.starts_with(&staged) || target.exists() => notes.push(format!(
+                "{}: name taken in ~/.config/opencode/skills",
+                skill.to_string_lossy()
+            )),
+            Ok(_) => {
+                fs::remove_file(&link)?;
+                std::os::unix::fs::symlink(&folder, &link)?;
+                linked += 1;
+            }
+            Err(_) if link.symlink_metadata().is_ok() => notes.push(format!(
+                "{}: name taken in ~/.config/opencode/skills",
+                skill.to_string_lossy()
+            )),
+            Err(_) => {
+                std::os::unix::fs::symlink(&folder, &link)?;
+                linked += 1;
+            }
+        }
+    }
+    paths::write_json(
+        &marker,
+        &json!({"version":entry.version, "source":source, "converter":OPENCODE_CONVERTER}),
+    )?;
+    notes.insert(0, format!("{linked} skills"));
+    Ok(format!("installed ({})", notes.join("; ")))
+}
+
+/// A SKILL.md with one line after its frontmatter naming the plugin root, for opencode.
+fn with_root_note(text: &str, root: &Path) -> String {
+    let note = format!(
+        "\nPlugin root: `{}` (what `CLAUDE_PLUGIN_ROOT` or \"two directories above this SKILL.md\" means here).\n",
+        root.display()
+    );
+    let end = text
+        .strip_prefix("---")
+        .and_then(|rest| rest.find("\n---").map(|i| i + 3 + "\n---".len()))
+        .and_then(|i| text[i..].find('\n').map(|j| i + j + 1));
+    match end {
+        Some(i) => format!("{}{note}{}", &text[..i], &text[i..]),
+        None => format!("{}{text}", note.trim_start()),
+    }
+}
+
 fn copy_tree(source: &Path, dest: &Path) -> Res<()> {
     if !source.exists() {
         return Ok(());
@@ -726,7 +867,11 @@ fn build_agy(
         &json!({"name":name,"description":manifest["description"].as_str().unwrap_or(""),"version":version}),
     )?;
     // copy_tree(&source.join("skills"), &dest.join("skills"))?;
-    let notes = stage_skills(name, source, dest, skills)?;
+    // let notes = stage_skills(name, source, dest, skills)?;
+    let installed = crate::usage::user_home()
+        .join(".gemini/config/plugins")
+        .join(name);
+    let notes = stage_skills(name, source, dest, skills, &installed)?;
     copy_tree(&source.join("bin"), &dest.join("bin"))?;
     for path in markdown_files(&source.join("commands"))? {
         let cmd = path.file_stem().unwrap().to_string_lossy();
@@ -792,7 +937,15 @@ fn build_agy(
 // - else a root SKILL.md, as skill <name>.
 // A root SKILL.md's plugin files go beside it in skills/<s>/; a skill folder's `../../X` and
 // `${CLAUDE_PLUGIN_ROOT}/X` go to the staged plugin root, and the variable becomes its install path.
-fn stage_skills(name: &str, source: &Path, dest: &Path, extra: &[String]) -> Res<Vec<String>> {
+// fn stage_skills(name: &str, source: &Path, dest: &Path, extra: &[String]) -> Res<Vec<String>> {
+// installed: where the host reads the staged plugin (agy: its plugin folder; opencode: dest itself).
+fn stage_skills(
+    name: &str,
+    source: &Path,
+    dest: &Path,
+    extra: &[String],
+    installed: &Path,
+) -> Res<Vec<String>> {
     let mut skills: Vec<(String, PathBuf)> = Vec::new();
     let mut dirs: Vec<PathBuf> = fs::read_dir(source.join("skills"))
         .map(|entries| entries.flatten().map(|e| e.path()).collect())
@@ -825,9 +978,10 @@ fn stage_skills(name: &str, source: &Path, dest: &Path, extra: &[String]) -> Res
     if skills.is_empty() && source.join("SKILL.md").is_file() {
         skills.push((name.into(), source.into()));
     }
-    let installed = crate::usage::user_home()
-        .join(".gemini/config/plugins")
-        .join(name);
+    // let installed = crate::usage::user_home()
+    //     .join(".gemini/config/plugins")
+    //     .join(name);
+    let installed = installed.to_path_buf();
     let (mut notes, mut staged): (Vec<String>, Vec<(String, PathBuf)>) = (Vec::new(), Vec::new());
     for (skill, dir) in skills {
         if staged.iter().any(|(s, d)| *s == skill || *d == dir)

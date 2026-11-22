@@ -1259,6 +1259,8 @@ echo '{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":100,"o
     let argv = fs::read_to_string(f.dir.join("opencode-argv")).unwrap();
     assert!(argv.contains("opencode/deepseek-v4.1-flash-free#max\n"));
     assert!(argv.contains("--archived") && !argv.contains("--session"));
+    // The background service would run tools outside the namespace.
+    assert!(argv.starts_with("run\n--standalone\n"));
     assert!(fs::read_to_string(f.dir.join("opencode-prompt")).unwrap().contains("ONE JSON object"));
     assert_eq!(f.read("oc", "meta.json")["thread_id"], "ses_1");
     // A fix round resumes the same opencode session.

@@ -77,8 +77,8 @@ pub fn quick() {
     auto_sync();
 }
 
-/// Plugins changed in Claude Code since the last sync: mirror them into Codex and agy in the
-/// background (user 2026-11-22: an update reaches every CLI). Rerun by hand with `baton sync`.
+/// Plugins changed in Claude Code since the last sync: mirror them into Codex, agy and opencode
+/// in the background (user 2026-11-22: an update reaches every CLI). Rerun by hand with `baton sync`.
 fn auto_sync() {
     if std::env::var_os("BATON_NO_AUTO_SYNC").is_some() {
         return;
@@ -116,7 +116,8 @@ fn auto_sync() {
         .spawn();
     match spawned {
         Ok(_) => println!(
-            "baton: Claude plugins changed; syncing them to Codex and agy in the background (log: {})",
+            // "baton: Claude plugins changed; syncing them to Codex and agy in the background (log: {})",
+            "baton: Claude plugins changed; syncing them to the other CLIs in the background (log: {})",
             home.join("sync.log").display()
         ),
         Err(_) => {

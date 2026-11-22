@@ -137,10 +137,13 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                         if options
                             .hosts
                             .iter()
-                            .any(|host| !["codex", "agy", "copilot"].contains(&host.as_str()))
+                            // .any(|host| !["codex", "agy", "copilot"].contains(&host.as_str()))
+                            .any(|host| {
+                                !["codex", "agy", "copilot", "opencode"].contains(&host.as_str())
+                            })
                         {
                             return Err(Error::usage(
-                                "--to must list codex, agy or copilot, comma-separated",
+                                "--to must list codex, agy, copilot or opencode, comma-separated",
                             ));
                         }
                         options.hosts.dedup();

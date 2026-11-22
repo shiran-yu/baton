@@ -149,7 +149,12 @@ impl Worker for OpenCode {
             format!("{}#{}", opencode_slug(&meta.model), meta.effort)
         };
         // --archived keeps baton's sessions out of the user's session list.
-        command.args(["run", "--model", &model, "--format", "json", "--auto", "--archived"]);
+        // command.args(["run", "--model", &model, "--format", "json", "--auto", "--archived"]);
+        // --standalone: without it the tools run in opencode's background service, outside the
+        // namespace, and a read-only worktree was written to (tested 2026-11-22).
+        command.args([
+            "run", "--standalone", "--model", &model, "--format", "json", "--auto", "--archived",
+        ]);
         if resume {
             let session = meta
                 .thread_id
