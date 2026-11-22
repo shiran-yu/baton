@@ -217,8 +217,11 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
         }
         "run" => {
             let agent = args.next().unwrap_or_default();
-            if !["codex", "agy", "copilot", "auto"].contains(&agent.as_str()) {
-                return Err(Error::usage("worker must be codex, agy, copilot or auto"));
+            // if !["codex", "agy", "copilot", "auto"].contains(&agent.as_str()) {
+            //     return Err(Error::usage("worker must be codex, agy, copilot or auto"));
+            // }
+            if !["codex", "agy", "opencode", "copilot", "auto"].contains(&agent.as_str()) {
+                return Err(Error::usage("worker must be agy, opencode, codex, copilot or auto"));
             }
             // Each worker's strongest model and highest effort (user 2026-10-29: reliability over cost).
             let (model, effort) = match agent.as_str() {
@@ -227,6 +230,11 @@ pub fn parse(args: impl Iterator<Item = String>) -> Res<Cli> {
                 // "agy" => (crate::agy::GEMINI.into(), None), // Gemini by default (user 2026-11-12); --model picks a Claude model
                 "agy" => (String::new(), None), // no --model: start() applies agy's model policy (agy.rs)
                 "codex" => (String::new(), None), // no --model: start() takes the best the account lists
+                // DeepSeek v4.1 Flash (free) at max, shown as "deepseek" (user 2026-11-22).
+                "opencode" => (
+                    crate::worker::OPENCODE_ALIAS.into(),
+                    Some(crate::worker::OPENCODE_EFFORT.into()),
+                ),
                 _ => (
                     crate::codex::MODEL.into(),
                     Some(crate::codex::EFFORT.into()),

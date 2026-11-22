@@ -73,11 +73,36 @@ fn quota(snapshot: &usage::Snapshot, agent: &str, compact: bool) -> String {
         })
         .unwrap_or_default()
 }
+// opencode is unmetered: "free", or "limit" while its exhausted mark holds; hidden when not installed.
+fn opencode(snapshot: &usage::Snapshot) -> String {
+    snapshot
+        .agents
+        .iter()
+        .find(|s| s.agent == "opencode")
+        .map(|s| {
+            if s.exhausted {
+                "limit"
+            } else if s.error.is_some() {
+                ""
+            } else {
+                "free"
+            }
+            .to_string()
+        })
+        .unwrap_or_default()
+}
 pub fn compact(snapshot: &usage::Snapshot) -> String {
-    [("codex", "CX"), ("agy", "AG"), ("claude", "CC")]
+    // [("codex", "CX"), ("agy", "AG"), ("claude", "CC")]
+    // The user's worker order (2026-11-22); DS is opencode's DeepSeek.
+    [("agy", "AG"), ("opencode", "DS"), ("codex", "CX"), ("claude", "CC")]
         .into_iter()
         .filter_map(|(agent, label)| {
-            let q = quota(snapshot, agent, true);
+            // let q = quota(snapshot, agent, true);
+            let q = if agent == "opencode" {
+                opencode(snapshot)
+            } else {
+                quota(snapshot, agent, true)
+            };
             (!q.is_empty()).then(|| format!("{label} {q}"))
         })
         .collect::<Vec<_>>()
@@ -88,6 +113,7 @@ fn agent(row: &Value) -> Option<&str> {
         "baton:codex" | "codex" => Some("codex"),
         "baton:agy" | "agy" => Some("agy"),
         "baton:copilot" | "copilot" => Some("copilot"),
+        "baton:opencode" | "opencode" => Some("opencode"),
         _ => None,
     }
 }

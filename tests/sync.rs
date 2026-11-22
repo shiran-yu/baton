@@ -30,7 +30,7 @@ printf '%s\n' "codex $*" >> "$BATON_HOME/calls"
 case "$*" in
   'plugin marketplace list') /bin/cat "$BATON_HOME/marketplaces.txt" ;;
   'plugin list --json') /bin/cat "$BATON_HOME/codex-list.json" ;;
-  'plugin marketplace add '*|'plugin add '*) ;;
+  'plugin marketplace add '*|'plugin add '*|'plugin remove '*) ;;
   *) exit 9 ;;
 esac
 "#,
@@ -436,6 +436,44 @@ fn codex_available_entries_are_installed_but_other_marketplace_does_not_count() 
         assert!(f.calls().contains("codex plugin add catalog@own-codex"));
         assert!(!f.calls().contains("marketplace add"));
     }
+}
+
+#[test]
+fn codex_replaces_an_older_copy_with_claudes_version_and_skips_my_status_bar() {
+    let f = Fixture::new();
+    f.inventory();
+    f.write(
+        "state/marketplaces.txt",
+        "[{\"name\":\"own-codex\",\"source\":\"local\"}]",
+    );
+    f.write_json(
+        "sources/catalog/.codex-plugin/plugin.json",
+        &json!({"name":"catalog","version":"1.10.0"}),
+    );
+    for (have, updated) in [("1.9.0", true), ("1.10.0", false), ("1.11.0", false), ("local", false)] {
+        f.write_json(
+            "state/codex-list.json",
+            &json!({"installed":[{"pluginId":"catalog@own-codex","version":have}]}),
+        );
+        f.write("state/calls", "");
+        let out = f.call(&["sync", "--to", "codex", "--only", "catalog"]);
+        success(&out);
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(f.calls().contains("codex plugin remove catalog@own-codex\ncodex plugin add catalog@own-codex"), updated, "{have}");
+        if updated {
+            assert!(text.contains(&format!("catalog codex: updated {have} -> 1.10.0")), "{text}");
+        } else {
+            assert!(text.contains("catalog codex: up to date"), "{have}: {text}");
+        }
+    }
+    // my-status-bar is excluded by default: a stale copy elsewhere rewrote Claude's status line.
+    let mut inventory = f.read_json("claude/installed_plugins.json");
+    inventory["plugins"]["my-status-bar@my-develop-plugins"] =
+        json!([{"installPath": f.dir.join("sources/alpha"), "version": "1.3.1"}]);
+    f.write_json("claude/installed_plugins.json", &inventory);
+    let out = f.call(&["sync", "--to", "agy", "--only", "my-status-bar"]);
+    success(&out);
+    assert!(String::from_utf8(out.stdout).unwrap().contains("my-status-bar agy: skipped (excluded)"));
 }
 
 #[test]

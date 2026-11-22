@@ -125,7 +125,7 @@ fn dispatch(cli: Cli) -> Res<i32> {
         return Ok(0);
     }
     if let Cli::Help = cli {
-        println!("baton run <codex|agy|copilot|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--mode edit|read] [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|hint|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton setup [--plan [--json] | --apply ID[,ID...] [--yes]]\nbaton sync [--dry-run] [--to codex,agy,copilot] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
+        println!("baton run <agy|opencode|codex|copilot|auto> --brief FILE [--type T] [--difficulty N] [--mode edit|read] [--effort low|medium|high|xhigh] [--model SLUG] [--task ID] [--base REF] [--timeout SECS] [--no-worktree] [--json] [--auto-fix N] [--detach]\nbaton route --brief FILE [--mode edit|read] [--type T] [--difficulty N] [--json]\nbaton scorecard [--since DAYS] [--json]\nbaton review <task> --by <codex|agy>\nbaton wait <task> [--max SECS]\nbaton fix <task> --notes FILE\nbaton ps [--json]\nbaton show <task> [--diff|--log|--brief]\nbaton accept <task> [--squash]\nbaton drop <task>\nbaton usage [--json] [--refresh]\nbaton statusline <line|hint|subagent>\nbaton doctor [--quick | --scan --out DIR]\nbaton setup [--plan [--json] | --apply ID[,ID...] [--yes]]\nbaton sync [--dry-run] [--to codex,agy,copilot] [--only NAME[,NAME]] [--include-trading]\nbaton hook-adapt --from <agy|codex> --event <ClaudeEvent> -- CMD [ARGS...]");
         return Ok(0);
     }
     let home = paths::home()?;
@@ -178,9 +178,12 @@ fn dispatch(cli: Cli) -> Res<i32> {
             let dir = home.join("tasks").join(&task);
             let _lock = Lock::acquire(&dir)?;
             let mut meta: Meta = paths::read_json(&dir.join("meta.json"))?;
-            if meta.closed || (meta.agent == "codex" && meta.thread_id.is_none()) {
+            // if meta.closed || (meta.agent == "codex" && meta.thread_id.is_none()) {
+            if meta.closed
+                || (["codex", "opencode"].contains(&meta.agent.as_str()) && meta.thread_id.is_none())
+            {
                 return Err(Error::usage(
-                    "fix requires an open task (Codex needs a stored thread_id)",
+                    "fix requires an open task (Codex and opencode need a stored session)",
                 ));
             }
             if meta.rounds >= 2 {
@@ -604,6 +607,8 @@ fn execute(
         }
     } else if meta.agent == "copilot" {
         Box::new(copilot::Copilot)
+    } else if meta.agent == "opencode" {
+        Box::new(worker::OpenCode)
     } else {
         Box::new(worker::Codex)
     };

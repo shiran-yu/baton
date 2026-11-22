@@ -1084,18 +1084,22 @@ fn agy_custom_worktree_location_accept_and_drop_from_other_cwd() {
     }
 }
 
-fn cache_usage(f: &Fixture, codex_used: f64) {
+// fn cache_usage(f: &Fixture, codex_used: f64) {
+// agy_used: agy goes first whenever eligible (2026-11-22), so reaching Codex needs agy used up.
+fn cache_usage(f: &Fixture, codex_used: f64, agy_used: f64) {
     fs::create_dir_all(&f.home).unwrap();
     fs::write(f.home.join("usage.json"), serde_json::json!({
         "codex":{"windows":[{"name":"5h","used":codex_used,"pace":0.4},{"name":"weekly","used":0.0,"pace":0.1}]},
-        "agy":{"windows":[{"id":"gemini-weekly","used":0.0,"pace":0.1}]}
+        // "agy":{"windows":[{"id":"gemini-weekly","used":0.0,"pace":0.1}]}
+        "agy":{"windows":[{"id":"gemini-weekly","used":agy_used,"pace":0.1}]}
     }).to_string()).unwrap();
 }
 
 #[test]
 fn route_json_human_output_overrides_and_cached_quotas() {
     let f = Fixture::new();
-    cache_usage(&f, 0.1);
+    // cache_usage(&f, 0.1);
+    cache_usage(&f, 0.1, 0.0);
     let brief = f.brief("route", "Build a widget", "true");
     let route = || {
         f.command()
@@ -1108,11 +1112,17 @@ fn route_json_human_output_overrides_and_cached_quotas() {
     let out = route();
     code(&out, 0);
     let r = json(&out);
-    assert_eq!(r["choice"]["agent"], "codex");
-    assert_eq!(r["choice"]["model"], "gpt-6-astra");
-    assert_eq!(r["choice"]["effort"], "xhigh");
-    assert_eq!(r["runner_up"]["agent"], "agy");
-    assert_eq!(r["choice"]["cost"], 120_000.0);
+    // assert_eq!(r["choice"]["agent"], "codex");
+    // assert_eq!(r["choice"]["model"], "gpt-6-astra");
+    // assert_eq!(r["choice"]["effort"], "xhigh");
+    // assert_eq!(r["runner_up"]["agent"], "agy");
+    // assert_eq!(r["choice"]["cost"], 120_000.0);
+    // agy first; opencode has no cached source here, so Codex is the runner-up.
+    assert_eq!(r["choice"]["agent"], "agy");
+    assert_eq!(r["runner_up"]["agent"], "codex");
+    assert_eq!(r["runner_up"]["model"], "gpt-6-astra");
+    assert_eq!(r["runner_up"]["effort"], "xhigh");
+    assert_eq!(r["runner_up"]["cost"], 120_000.0);
     let out = f
         .command()
         .args(["route", "--brief"])
@@ -1125,7 +1135,8 @@ fn route_json_human_output_overrides_and_cached_quotas() {
     assert!(human.contains("mechanical D1"));
     assert!(human.contains("pace 0.4") || human.contains("pace 0.1"));
     assert!(human.contains("runner-up:"));
-    cache_usage(&f, 0.96);
+    // cache_usage(&f, 0.96);
+    cache_usage(&f, 0.96, 0.0);
     assert_eq!(json(&route())["choice"]["agent"], "agy");
     fs::remove_file(f.home.join("usage.json")).unwrap();
     assert_eq!(json(&route())["choice"]["agent"], "claude");
@@ -1154,14 +1165,18 @@ fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
     // No 3p bucket in the cache, so agy routes to Gemini at its highest listed effort.
     // No Argon bucket in the cache, so agy routes to Hydrogen at its highest listed effort.
     // Since 2026-11-18: to Neon, the next of the chain, at xhigh.
-    for (agent, codex_used, model, effort) in [
-        ("codex", 0.1, "gpt-6-astra", "xhigh"),
+    // for (agent, codex_used, model, effort) in [
+    //     ("codex", 0.1, "gpt-6-astra", "xhigh"),
+    for (agent, codex_used, agy_used, model, effort) in [
+        ("codex", 0.1, 0.999, "gpt-6-astra", "xhigh"),
         // ("agy", 0.96, "gemini-3.8-flash", "high"),
         // ("agy", 0.96, "gemini-4-hydrogen", "xhigh"),
-        ("agy", 0.96, "gemini-4-neon", "xhigh"),
+        // ("agy", 0.96, "gemini-4-neon", "xhigh"),
+        ("agy", 0.96, 0.0, "gemini-4-neon", "xhigh"),
     ] {
         let f = Fixture::new();
-        cache_usage(&f, codex_used);
+        // cache_usage(&f, codex_used);
+        cache_usage(&f, codex_used, agy_used);
         let brief = f.brief("auto", "Build a widget", "test -f src/output.txt");
         let out = f
             .command()
@@ -1201,6 +1216,65 @@ fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
         code(&card, 0);
         assert_eq!(json(&card)["rows"][0]["first_pass_verified_rate"], 0.5);
     }
+}
+
+#[test]
+fn opencode_runs_deepseek_resumes_its_session_and_marks_a_limit() {
+    let f = Fixture::new();
+    let fake = f.dir.join("fake-opencode");
+    fs::write(
+        &fake,
+        r#"#!/bin/sh
+printf '%s\n' "$@" > "$TMPDIR/opencode-argv"
+cat > "$TMPDIR/opencode-prompt"
+if [ -f "$TMPDIR/opencode-limit" ]; then
+  echo '{"type":"error","sessionID":"ses_2","error":{"name":"APIError","data":{"message":"Rate limit exceeded"}}}'
+  exit 1
+fi
+mkdir -p src && echo done >> src/output.txt
+echo '{"type":"step_start","sessionID":"ses_1","part":{"type":"step-start"}}'
+echo '{"type":"tool_use","sessionID":"ses_1","part":{"tool":"write","state":{"input":{"filePath":"src/output.txt"}}}}'
+echo '{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"Wrote it. {\"status\":\"done\",\"notes\":\"wrote src/output.txt\",\"questions\":[]}"}}'
+echo '{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":100,"output":20,"reasoning":5,"cache":{"read":300,"write":0}}}}'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let opencode = |args: &[&str]| {
+        f.command()
+            .env("BATON_OPENCODE", &fake)
+            .env("BATON_OPENCODE_NO_NS", "1")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let brief = f.brief("oc", "Write one file", "test -f src/output.txt");
+    let out = opencode(&["run", "opencode", "--task", "oc", "--json", "--brief", brief.to_str().unwrap()]);
+    code(&out, 0);
+    let result = json(&out);
+    assert_eq!((result["model"].as_str(), result["effort"].as_str()), (Some("deepseek"), Some("max")));
+    assert_eq!(result["verified"], true);
+    assert_eq!(result["notes"], "wrote src/output.txt");
+    assert_eq!(result["tokens"], serde_json::json!({"input": 400, "cached": 300, "output": 25}));
+    let argv = fs::read_to_string(f.dir.join("opencode-argv")).unwrap();
+    assert!(argv.contains("opencode/deepseek-v4.1-flash-free#max\n"));
+    assert!(argv.contains("--archived") && !argv.contains("--session"));
+    assert!(fs::read_to_string(f.dir.join("opencode-prompt")).unwrap().contains("ONE JSON object"));
+    assert_eq!(f.read("oc", "meta.json")["thread_id"], "ses_1");
+    // A fix round resumes the same opencode session.
+    let notes = f.dir.join("fix.md");
+    fs::write(&notes, "Append a line.").unwrap();
+    code(&opencode(&["fix", "oc", "--notes", notes.to_str().unwrap()]), 0);
+    assert!(fs::read_to_string(f.dir.join("opencode-argv")).unwrap().contains("--session\nses_1\n"));
+    // A rate limit fails with code 4 and marks opencode exhausted, with the time of the mark.
+    fs::write(f.dir.join("opencode-limit"), "").unwrap();
+    let brief = f.brief("oc-limit", "Write one file", "test -f src/output.txt");
+    let out = opencode(&["run", "opencode", "--task", "oc-limit", "--json", "--brief", brief.to_str().unwrap()]);
+    code(&out, 4);
+    let usage: Value = serde_json::from_slice(&fs::read(f.home.join("usage.json")).unwrap()).unwrap();
+    let source = usage["agents"].as_array().unwrap().iter().find(|s| s["agent"] == "opencode").unwrap().clone();
+    assert_eq!(source["exhausted"], true);
+    assert!(source["fetched_at"].is_u64());
 }
 
 #[test]

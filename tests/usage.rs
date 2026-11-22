@@ -167,7 +167,10 @@ fn now() -> u64 {
 fn fixtures_exchange_normalization_cache_and_refresh() {
     let f = Fixture::new();
     let first = f.usage(false);
-    assert_eq!(first["agents"].as_array().unwrap().len(), 4);
+    // assert_eq!(first["agents"].as_array().unwrap().len(), 4);
+    // opencode joined 2026-11-22; not installed here, so its source holds an error.
+    assert_eq!(first["agents"].as_array().unwrap().len(), 5);
+    assert_eq!(source(&first, "opencode")["error"], "opencode not installed");
     let cx = source(&first, "codex");
     assert_eq!(cx["plan_type"], "plus");
     assert_eq!(cx["ordinary_usage_allowed"], true);
@@ -190,7 +193,9 @@ fn fixtures_exchange_normalization_cache_and_refresh() {
     assert_eq!(cc["fetched_at"], 1792418477_u64);
     assert_eq!(cc["windows"][0]["used"], 0.36);
     assert_eq!(cc["windows"][1]["window"], "7d");
-    for s in first["agents"].as_array().unwrap() {
+    // for s in first["agents"].as_array().unwrap() {
+    // opencode (not installed here, no windows) is checked above.
+    for s in first["agents"].as_array().unwrap().iter().filter(|s| s["agent"] != "opencode") {
         assert!(s["error"].is_null(), "{s}");
         for w in s["windows"].as_array().unwrap() {
             let elapsed = (1.0
@@ -361,7 +366,9 @@ fn statusline_cache_only_and_malformed_cache() {
         String::from_utf8(out.stdout).unwrap(),
         // "CX 5h 7% wk 3% · AG gem 53% 3p 100% · CC 5h 36% 7d 7%\n"
         // agy: Argon and the Gemini group, fractions left; the 3p group is left out.
-        "CX 5h 7% wk 3% · AG wk 53% · CC 5h 36% 7d 7%\n"
+        // "CX 5h 7% wk 3% · AG wk 53% · CC 5h 36% 7d 7%\n"
+        // The worker order since 2026-11-22; opencode is not installed here, so DS is hidden.
+        "AG wk 53% · CX 5h 7% wk 3% · CC 5h 36% 7d 7%\n"
     );
     assert_eq!(
         fs::read_to_string(f.dir.join("state/calls"))
@@ -394,7 +401,8 @@ fn pro_plan_buckets_in_usage_statusline_and_hint() {
         ["gemini-argon-wtu-weekly", "gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"]
     );
     let line = String::from_utf8(f.call(&["statusline", "line"]).stdout).unwrap();
-    assert!(line.contains(" · AG argon 75% 5h 40% wk 90% · "), "{line}");
+    // assert!(line.contains(" · AG argon 75% 5h 40% wk 90% · "), "{line}");
+    assert!(line.starts_with("AG argon 75% 5h 40% wk 90% · "), "{line}");
     let table = String::from_utf8(f.call(&["usage"]).stdout).unwrap();
     for part in ["argon wk 75% left", "gemini 5h 40% left", "gemini wk 90% left", "claude+gpt 5h 100% left"] {
         assert!(table.contains(part), "{part}: {table}");
@@ -426,6 +434,14 @@ fn statusline_hint_names_the_first_eligible_worker() {
         let out = String::from_utf8(f.call(&["statusline", "hint"]).stdout).unwrap();
         out.rsplit_once(": ").unwrap().1.trim_end().to_string()
     };
+    // assert_eq!(hint(&snapshot), "baton:codex first");
+    // agy first whenever eligible (2026-11-22); opencode is not installed here.
+    assert_eq!(hint(&snapshot), "baton:agy first");
+    for agent in snapshot["agents"].as_array_mut().unwrap() {
+        if agent["agent"] == "agy" {
+            agent["error"] = json!("quota reached");
+        }
+    }
     assert_eq!(hint(&snapshot), "baton:codex first");
     for agent in snapshot["agents"].as_array_mut().unwrap() {
         match agent["agent"].as_str().unwrap() {
@@ -563,6 +579,32 @@ fn quick_doctor_is_silent_or_names_missing_without_spawning() {
     assert!(String::from_utf8(out.stdout)
         .unwrap()
         .contains("writable BATON_HOME"));
+}
+
+#[test]
+fn quick_doctor_starts_one_background_sync_per_plugin_change() {
+    let f = Fixture::new();
+    let plugins = f.dir.join(".claude/plugins");
+    fs::create_dir_all(&plugins).unwrap();
+    fs::write(plugins.join("installed_plugins.json"), r#"{"plugins":{}}"#).unwrap();
+    let quick = || String::from_utf8(f.call(&["doctor", "--quick"]).stdout).unwrap();
+    assert!(quick().contains("syncing them to Codex and agy in the background"));
+    assert_eq!(
+        fs::read_to_string(f.dir.join("state/synced_plugins.json")).unwrap(),
+        r#"{"plugins":{}}"#
+    );
+    // Unchanged inventory: no second sync.
+    assert!(quick().is_empty());
+    fs::write(plugins.join("installed_plugins.json"), r#"{"plugins":{"x@m":[]}}"#).unwrap();
+    assert!(!quick().is_empty());
+    assert!(f
+        .command()
+        .env("BATON_NO_AUTO_SYNC", "1")
+        .args(["doctor", "--quick"])
+        .output()
+        .unwrap()
+        .stdout
+        .is_empty());
 }
 
 #[test]

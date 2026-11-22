@@ -584,6 +584,25 @@ pub fn user_home() -> PathBuf {
 pub fn cache(home: &Path) -> Option<Snapshot> {
     paths::read_json(&home.join("usage.json")).ok()
 }
+/// Seconds an opencode exhausted mark holds: its free tier publishes no reset time.
+const OPENCODE_COOLDOWN: u64 = 3600;
+
+/// opencode's free DeepSeek is unmetered: the source only shows that the CLI runs.
+fn live_opencode() -> Res<Source> {
+    process::capture(
+        Command::new(process::executable("opencode")).arg("--version"),
+        Duration::from_secs(10),
+    )
+    .map_err(|_| Error::new(1, "opencode not installed"))?;
+    Ok(Source {
+        agent: "opencode".into(),
+        plan_type: Some("free".into()),
+        model: Some(crate::worker::OPENCODE_ALIAS.into()),
+        effort: Some(crate::worker::OPENCODE_EFFORT.into()),
+        ..Source::default()
+    })
+}
+
 pub fn mark_exhausted(home: &Path, agent: &str, message: &str) -> Res<()> {
     let path = home.join("usage.json");
     let mut cache: Value = paths::read_json(&path)
@@ -619,6 +638,10 @@ pub fn mark_exhausted(home: &Path, agent: &str, message: &str) -> Res<()> {
     };
     source["error"] = json!(message);
     source["exhausted"] = json!(true);
+    // When the mark was set: opencode's lapses after OPENCODE_COOLDOWN.
+    if agent == "opencode" {
+        source["fetched_at"] = json!(paths::now());
+    }
     fs::create_dir_all(home)?;
     paths::write_json(&path, &cache)
 }
@@ -627,14 +650,20 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
     if !refresh {
         if let Some(snapshot) = cache(home) {
             if paths::now().saturating_sub(snapshot.fetched_at) < 300 {
-                if snapshot.agents.iter().any(|a| a.agent == "copilot") {
+                // if snapshot.agents.iter().any(|a| a.agent == "copilot") {
+                // A cache from before opencode joined is read again.
+                if ["copilot", "opencode"]
+                    .iter()
+                    .all(|agent| snapshot.agents.iter().any(|a| a.agent == *agent))
+                {
                     return Ok(snapshot);
                 }
             }
         }
     }
     type Reader = fn() -> Res<Source>;
-    let sources: [(&str, Reader); 4] = [
+    // let sources: [(&str, Reader); 4] = [
+    let sources: [(&str, Reader); 5] = [
         ("codex", || {
             live_codex().or_else(|live| {
                 fallback_codex().map_err(|stale| {
@@ -656,6 +685,7 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
         }),
         ("claude", claude),
         ("copilot", live_copilot),
+        ("opencode", live_opencode),
     ];
     let handles: Vec<_> = sources
         .into_iter()
@@ -684,6 +714,13 @@ pub fn read(home: &Path, refresh: bool) -> Res<Snapshot> {
                 continue;
             }
             let source = previous.source(&current.agent);
+            // opencode has no usage read to clear its mark: the mark lapses after an hour.
+            if current.agent == "opencode"
+                && paths::now().saturating_sub(source["fetched_at"].as_u64().unwrap_or(0))
+                    >= OPENCODE_COOLDOWN
+            {
+                continue;
+            }
             if source["exhausted"] == true {
                 *current = serde_json::from_value(source.clone()).unwrap_or_else(|_| Source {
                     agent: current.agent.clone(),
@@ -758,6 +795,9 @@ pub fn table(snapshot: &Snapshot) -> String {
                 percent(amount),
                 reset_time(w.resets_at)
             ));
+        }
+        if s.agent == "opencode" {
+            out.push_str("  deepseek at max, unmetered");
         }
         if s.agent == "codex" {
             out.push_str(&format!(

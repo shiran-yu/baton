@@ -107,7 +107,9 @@ implemented by Codex in its own worktree, verified by baton and reviewed before 
 | Codex and Antigravity drivers, worktrees, verification, auto-fix, detach and wait | done |
 | Quota for the lead and workers (`baton usage`), status-line and agent-panel rows | done |
 | Routing by difficulty and quota, ledger and scorecard | done; priors still being tuned from the ledger |
-| `baton sync` (Claude Code plugins into Codex and agy, with hook conversion) | done; trading plugins stay out of agy until their guards are proven there |
+| `baton sync` (Claude Code plugins into Codex and agy, with hook conversion) | done; trading plugins stay out of agy until their guards are proven there; an older Codex copy is replaced; my-status-bar is excluded |
+| Automatic sync: each session start (`doctor --quick`) runs `baton sync` in the background when Claude Code's plugin list changed (log `$BATON_HOME/sync.log`; `BATON_NO_AUTO_SYNC=1` turns it off) | done |
+| opencode worker: DeepSeek v4.1 Flash (free) at `max`, shown as `deepseek`; read-only `$HOME` namespace; priority agy, opencode, Codex | done |
 | `baton setup` and release binaries for macOS and Linux (x86_64, arm64) | done; first tagged release pending |
 | Live token counts and quota for Codex while it works; quota and auth failures stop routing to that agent | done |
 

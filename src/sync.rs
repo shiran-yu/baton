@@ -42,7 +42,9 @@ struct Config {
 }
 /// OpenAI's codex plugin drives Codex from Claude Code; mirroring it into Codex or agy is pointless.
 fn default_exclude() -> Vec<String> {
-    vec!["codex".into()]
+    // vec!["codex".into()]
+    // my-status-bar: a stale mirrored copy ran its old sync.sh and downgraded Claude's status line (2026-11-21).
+    vec!["codex".into(), "my-status-bar".into()]
 }
 fn own_marketplaces() -> Vec<String> {
     [
@@ -142,7 +144,8 @@ pub fn run(home: &Path, options: &Options) -> Res<i32> {
                 Ok(format!("skipped ({reason})"))
             } else if let Some(entry) = entries.first() {
                 if host == "codex" {
-                    codex.sync(name, market, &marketplaces, options.dry_run)
+                    // codex.sync(name, market, &marketplaces, options.dry_run)
+                    codex.sync(name, market, &marketplaces, &entry.path, options.dry_run)
                 } else if host == "copilot" {
                     copilot.sync(name, market, &marketplaces, options.dry_run)
                 } else {
@@ -306,6 +309,8 @@ impl Codex {
         name: &str,
         market: &str,
         markets: &BTreeMap<String, Marketplace>,
+        // Claude's installed copy: its manifest version is the one Codex should run.
+        claude_copy: &Path,
         dry: bool,
     ) -> Res<String> {
         let Some(market) = markets.get(market) else {
@@ -333,9 +338,38 @@ impl Codex {
             )?)?);
         }
         let id = format!("{name}@{market_name}");
-        if self.added.contains(&id) || installed(self.plugins.as_ref().unwrap(), name, market_name)
-        {
+        // if self.added.contains(&id) || installed(self.plugins.as_ref().unwrap(), name, market_name)
+        // {
+        //     return Ok("up to date".into());
+        // }
+        if self.added.contains(&id) {
             return Ok("up to date".into());
+        }
+        if installed(self.plugins.as_ref().unwrap(), name, market_name) {
+            // An older copy is replaced: Codex has no in-place plugin upgrade.
+            let have = codex_version(self.plugins.as_ref().unwrap(), &id);
+            let want = manifest_version(claude_copy);
+            let (Some(have), Some(want)) = (have, want) else {
+                return Ok("up to date".into());
+            };
+            if have == "local" || !newer(&want, &have) {
+                return Ok("up to date".into());
+            }
+            let remove = ["plugin", "remove", &id];
+            let add = ["plugin", "add", &id];
+            if dry {
+                planned("codex", &remove);
+                planned("codex", &add);
+            } else {
+                invoke("codex", &remove)?;
+                invoke("codex", &add)?;
+            }
+            self.added.insert(id);
+            return Ok(if dry {
+                format!("skipped (dry-run; would update {have} -> {want})")
+            } else {
+                format!("updated {have} -> {want}")
+            });
         }
         let args = ["plugin", "add", &id];
         if dry {
@@ -372,6 +406,38 @@ fn marketplace_present(text: &str, name: &str, location: &str) -> bool {
                 .split(|c: char| c.is_whitespace() || ":()[]\"'│,".contains(c))
                 .any(|part| part == name || part == location)
     })
+}
+/// The version `codex plugin list --json` reports for an installed plugin id.
+fn codex_version(list: &Value, id: &str) -> Option<String> {
+    list["installed"]
+        .as_array()?
+        .iter()
+        .find(|p| p["pluginId"] == id)?["version"]
+        .as_str()
+        .map(String::from)
+}
+/// Whether version `a` is newer than `b`: dotted numbers compare numerically, other forms when different.
+fn newer(a: &str, b: &str) -> bool {
+    let parse = |v: &str| {
+        v.split('.')
+            .map(|p| p.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    match (parse(a), parse(b)) {
+        (Some(a), Some(b)) => a > b,
+        _ => a != b,
+    }
+}
+/// A plugin copy's version: its Codex manifest, else its Claude manifest.
+fn manifest_version(copy: &Path) -> Option<String> {
+    [".codex-plugin/plugin.json", ".claude-plugin/plugin.json"]
+        .iter()
+        .find_map(|file| {
+            paths::read_json::<Value>(&copy.join(file)).ok()?["version"]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(String::from)
+        })
 }
 fn installed(value: &Value, name: &str, market: &str) -> bool {
     match value {

@@ -238,9 +238,22 @@ pub fn agy_allowed(usage: &Usage, model: &str, d: u8) -> bool {
     }
 }
 
+/// The user's worker order (2026-11-22): agy, then opencode (free DeepSeek), then Codex (free
+/// plan, no credit), then Copilot (premium requests).
+pub fn priority(agent: &str) -> u8 {
+    match agent {
+        "agy" => 0,
+        "opencode" => 1,
+        "codex" => 2,
+        "copilot" => 3,
+        _ => 4,
+    }
+}
+
 /// Prompt-hook advice from cached quota: the first worker eligible for a default D2 task.
 pub fn hint(usage: &Usage) -> String {
-    for agent in ["codex", "agy", "copilot"] {
+    // for agent in ["codex", "agy", "copilot"] {
+    for agent in ["agy", "opencode", "codex", "copilot"] {
         // let quota = usage.quota(agent, false);
         // agy is eligible when any model of its D2 tiers is.
         let models = if agent == "agy" {
@@ -259,6 +272,11 @@ pub fn hint(usage: &Usage) -> String {
             } else {
                 ""
             };
+            // opencode has no relay agent: the lead runs it through Bash.
+            // if agent == "opencode" {
+            //     return "baton run opencode first (Bash, run_in_background)".into();
+            // }
+            // opencode's relay agent: agents/opencode.md (2026-11-22).
             return format!("baton:{agent} first{read}");
         }
     }
@@ -301,6 +319,8 @@ pub fn recommend(
     for model in crate::agy::tiers(&class.task_type, d) {
         models.push(("agy", model));
     }
+    // opencode's free DeepSeek at max (user 2026-11-22); priority() puts it between agy and codex.
+    models.push(("opencode", crate::worker::OPENCODE_ALIAS));
     if mode == "read" && d <= 2 {
         // models.push(("copilot", "auto", false));
         models.push(("copilot", "auto"));
@@ -325,6 +345,7 @@ pub fn recommend(
         let effort = match agent {
             // "codex" => Some(crate::codex::EFFORT.into()),
             "codex" => Some(codex_effort.clone()),
+            "opencode" => Some(crate::worker::OPENCODE_EFFORT.into()),
             "copilot" => Some(["low", "medium", "high", "xhigh"][(d - 1) as usize].into()),
             _ => None,
         };
@@ -390,10 +411,22 @@ pub fn recommend(
         candidates.push(c);
     }
     // Stable sorting keeps deterministic codex/Gemini/model preference on ties.
+    // candidates.sort_by(|a, b| {
+    //     b.score
+    //         .partial_cmp(&a.score)
+    //         .unwrap_or(std::cmp::Ordering::Equal)
+    // });
+    // Eligible first, then the user's worker priority, then score (user 2026-11-22).
     candidates.sort_by(|a, b| {
         b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .is_some()
+            .cmp(&a.score.is_some())
+            .then(priority(&a.agent).cmp(&priority(&b.agent)))
+            .then(
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
     });
     let eligible: Vec<_> = candidates
         .iter()
@@ -607,12 +640,20 @@ mod tests {
         let b = brief("Build it", "src/main.rs", "true");
         let mut u = usage();
         let normal = recommend_brief(&b, &u);
-        assert_eq!(normal.choice.agent, "codex");
-        assert_eq!(normal.choice.model.as_deref(), Some("gpt-6-astra"));
-        assert_eq!(normal.choice.effort.as_deref(), Some("xhigh"));
-        assert_eq!(normal.runner_up.unwrap().agent, "agy");
-        assert!((normal.choice.score.unwrap() - (1.5 - 120_000.0 / 2_250_000.0)).abs() < 1e-10);
-        assert!(normal.choice.reason.contains("pace 0.4"));
+        // assert_eq!(normal.choice.agent, "codex");
+        // assert_eq!(normal.choice.model.as_deref(), Some("gpt-6-astra"));
+        // assert_eq!(normal.choice.effort.as_deref(), Some("xhigh"));
+        // assert_eq!(normal.runner_up.unwrap().agent, "agy");
+        // assert!((normal.choice.score.unwrap() - (1.5 - 120_000.0 / 2_250_000.0)).abs() < 1e-10);
+        // assert!(normal.choice.reason.contains("pace 0.4"));
+        // Since 2026-11-22 agy goes first whenever eligible; Codex is still scored.
+        assert_eq!(normal.choice.agent, "agy");
+        let codex = normal.runner_up.unwrap();
+        assert_eq!(codex.agent, "codex");
+        assert_eq!(codex.model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(codex.effort.as_deref(), Some("xhigh"));
+        assert!((codex.score.unwrap() - (1.5 - 120_000.0 / 2_250_000.0)).abs() < 1e-10);
+        assert!(codex.reason.contains("pace 0.4"));
         u.0["codex"]["windows"][0]["used"] = json!(0.96);
         let low = recommend_brief(&b, &u);
         assert_eq!(low.choice.agent, "agy");
@@ -637,6 +678,29 @@ mod tests {
             recommend_brief(&b, &Usage::default()).choice.agent,
             "claude"
         );
+    }
+    #[test]
+    fn priority_is_agy_then_opencode_then_codex() {
+        let b = brief("Build it", "src/main.rs", "true");
+        let mut u = usage();
+        u.0["opencode"] = json!({"agent": "opencode", "plan_type": "free"});
+        let r = recommend_brief(&b, &u);
+        assert_eq!(r.choice.agent, "agy");
+        let opencode = r.runner_up.unwrap();
+        assert_eq!(opencode.agent, "opencode");
+        assert_eq!(opencode.model.as_deref(), Some("deepseek"));
+        assert_eq!(opencode.effort.as_deref(), Some("max"));
+        u.0["agy"]["rateLimitReachedType"] = json!("weekly");
+        let r = recommend_brief(&b, &u);
+        assert_eq!(r.choice.agent, "opencode");
+        assert_eq!(r.runner_up.unwrap().agent, "codex");
+        u.0["opencode"]["error"] = json!("rate limit");
+        u.0["opencode"]["exhausted"] = json!(true);
+        assert_eq!(recommend_brief(&b, &u).choice.agent, "codex");
+        assert_eq!(hint(&u), "baton:codex first");
+        u.0["opencode"] = json!({"agent": "opencode"});
+        // assert_eq!(hint(&u), "baton run opencode first (Bash, run_in_background)");
+        assert_eq!(hint(&u), "baton:opencode first");
     }
     #[test]
     fn hard_rules_win_even_with_overrides() {

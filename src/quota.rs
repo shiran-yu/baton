@@ -89,6 +89,14 @@ impl Usage {
                 pace: 1.0,
             });
         }
+        // opencode's free DeepSeek has no published limit: only an exhausted mark (an error above) stops it.
+        if agent == "opencode" {
+            return Ok(Quota {
+                remaining: 6_000_000.0,
+                window: "free".into(),
+                pace: 1.0,
+            });
+        }
         let limits = data
             .pointer("/result/rateLimits")
             .or_else(|| data.get("rateLimits"))
@@ -230,6 +238,14 @@ mod tests {
         let old = Usage(json!({"fetched_at": 1, "agents": [{"agent": "codex", "windows": []}]}));
         assert_eq!(old.codex_model(), (crate::codex::MODEL.into(), crate::codex::EFFORT.into()));
         assert_eq!(Usage(Value::Null).codex_model().0, crate::codex::MODEL);
+    }
+    #[test]
+    fn opencode_is_unmetered_until_marked_exhausted() {
+        let ok = Usage(json!({"agents": [{"agent": "opencode", "plan_type": "free"}]}));
+        assert_eq!(ok.quota("opencode", "deepseek").unwrap().window, "free");
+        let out = Usage(json!({"agents": [{"agent": "opencode", "error": "rate limit", "exhausted": true}]}));
+        assert!(out.quota("opencode", "deepseek").is_err());
+        assert!(Usage(Value::Null).quota("opencode", "deepseek").is_err());
     }
     #[test]
     fn raw_fixture_limits_and_buckets() {

@@ -106,14 +106,20 @@ fn command(meta: &Meta) -> Res<Command> {
             "copilot requires a working unshare user/mount namespace for read-only execution; refusing to run writable"));
     }
     let mut command = Command::new("unshare");
+    // command.args(["-rm", "sh", "-c",
+    //     "mount -t tmpfs tmpfs /tmp && mount --bind \"$1\" \"$1\" && mount -o remount,bind,ro \"$1\" && shift && exec \"$@\"",
+    //     "sh", &meta.worktree]).arg(binary);
+    // cd after the mounts: a cwd taken before them still reaches the writable tree.
     command.args(["-rm", "sh", "-c",
-        "mount -t tmpfs tmpfs /tmp && mount --bind \"$1\" \"$1\" && mount -o remount,bind,ro \"$1\" && shift && exec \"$@\"",
+        "mount -t tmpfs tmpfs /tmp && mount --bind \"$1\" \"$1\" && mount -o remount,bind,ro \"$1\" && cd \"$1\" && shift && exec \"$@\"",
         "sh", &meta.worktree]).arg(binary);
     Ok(command)
 }
 
 // Walk complete outer objects rather than matching braces inside JSON strings or nested values.
-fn report(message: &str, success: bool) -> Report {
+// fn report(message: &str, success: bool) -> Report {
+// Shared with the opencode worker (worker.rs).
+pub(crate) fn report(message: &str, success: bool) -> Report {
     let mut last = None;
     let mut offset = 0;
     while let Some(index) = message[offset..].find('{') {
@@ -130,7 +136,9 @@ fn report(message: &str, success: bool) -> Report {
     }
     if let Some(value) = last {
         if let Ok(report) = serde_json::from_value::<Report>(value) {
-            if ["done", "blocked", "needs_decision"].contains(&report.status.as_str()) {
+            // if ["done", "blocked", "needs_decision"].contains(&report.status.as_str()) {
+            // partial: an opencode edit task may stop half way.
+            if ["done", "partial", "blocked", "needs_decision"].contains(&report.status.as_str()) {
                 return report;
             }
         }
@@ -142,12 +150,14 @@ fn report(message: &str, success: bool) -> Report {
     }
 }
 
-enum Event {
+// enum Event {
+pub(crate) enum Event {
     Out(String),
     Err(String),
     ReadError(String),
 }
-fn reader(stream: impl Read + Send + 'static, tx: mpsc::Sender<Event>, stderr: bool) {
+// fn reader(stream: impl Read + Send + 'static, tx: mpsc::Sender<Event>, stderr: bool) {
+pub(crate) fn reader(stream: impl Read + Send + 'static, tx: mpsc::Sender<Event>, stderr: bool) {
     std::thread::spawn(move || {
         for line in BufReader::new(stream).lines() {
             let event = match line {

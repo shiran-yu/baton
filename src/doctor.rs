@@ -1,11 +1,22 @@
 use crate::{paths, process, usage, Res};
 use serde_json::Value;
+// use std::{
+//     collections::HashSet,
+//     fs,
+//     os::unix::fs::{MetadataExt, PermissionsExt},
+//     path::Path,
+//     process::Command,
+//     time::Duration,
+// };
 use std::{
     collections::HashSet,
     fs,
-    os::unix::fs::{MetadataExt, PermissionsExt},
-    path::Path,
-    process::Command,
+    os::unix::{
+        fs::{MetadataExt, PermissionsExt},
+        process::CommandExt,
+    },
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
     time::Duration,
 };
 
@@ -62,6 +73,55 @@ pub fn quick() {
     }
     if !missing.is_empty() {
         println!("baton doctor: missing {}", missing.join(", "));
+    }
+    auto_sync();
+}
+
+/// Plugins changed in Claude Code since the last sync: mirror them into Codex and agy in the
+/// background (user 2026-11-22: an update reaches every CLI). Rerun by hand with `baton sync`.
+fn auto_sync() {
+    if std::env::var_os("BATON_NO_AUTO_SYNC").is_some() {
+        return;
+    }
+    let (Ok(home), Some(user_home)) = (paths::home(), std::env::var_os("HOME")) else {
+        return;
+    };
+    let plugins = std::env::var_os("BATON_CLAUDE_PLUGINS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(user_home).join(".claude/plugins"));
+    let Ok(inventory) = fs::read(plugins.join("installed_plugins.json")) else {
+        return;
+    };
+    // The stamp is the inventory last synced; written before the spawn so a second session skips.
+    let stamp = home.join("synced_plugins.json");
+    if fs::read(&stamp).is_ok_and(|old| old == inventory) {
+        return;
+    }
+    let (Ok(exe), Ok(log)) = (std::env::current_exe(), fs::File::create(home.join("sync.log")))
+    else {
+        return;
+    };
+    let Ok(err) = log.try_clone() else {
+        return;
+    };
+    if fs::write(&stamp, &inventory).is_err() {
+        return;
+    }
+    let spawned = Command::new(exe)
+        .arg("sync")
+        .stdin(Stdio::null())
+        .stdout(log)
+        .stderr(err)
+        .process_group(0)
+        .spawn();
+    match spawned {
+        Ok(_) => println!(
+            "baton: Claude plugins changed; syncing them to Codex and agy in the background (log: {})",
+            home.join("sync.log").display()
+        ),
+        Err(_) => {
+            let _ = fs::remove_file(&stamp);
+        }
     }
 }
 fn version(agent: &str) -> String {

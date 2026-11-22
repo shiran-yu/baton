@@ -20,7 +20,7 @@ Reading is delegable too, judging is not: see "Read-only research" below.
 ## 1. Check capacity and pick the worker
 
 ```sh
-baton usage                       # 5 h and weekly remaining for claude, codex, agy (argon, 5h, wk)
+baton usage                       # remaining for claude, agy (argon, 5h, wk), opencode, codex
 baton route --brief <file>        # worker, model, effort and the reason
 ```
 
@@ -47,6 +47,16 @@ strongest first:
 `baton route` and `baton run agy` without `--model` apply these tiers, each model gated by the
 tightest bucket that meters it. Routing picks the worker, never a weaker model or effort. Do not
 pass `--model` or `--effort` to save quota.
+
+Worker priority (user, 2026-11-22): **agy, then opencode, then Codex**, then Copilot for small read
+briefs. Routing takes the first eligible worker in that order; score only breaks ties.
+
+- **opencode** runs DeepSeek v4.1 Flash, free tier (`opencode/deepseek-v4.1-flash-free`), always at
+  `max`; baton shows it as `deepseek` (`DS` in the quota line). It has no sandbox of its own, so baton
+  runs it in a user+mount namespace: `$HOME` read-only except opencode's own folders and, in edit
+  mode, the worktree. Relay agent `baton:opencode`. A rate-limit error marks it exhausted for an
+  hour.
+- Codex is on the free plan without credit (2026-11), hence last of the three.
 
 ## 2. Write the brief
 
@@ -77,12 +87,12 @@ Make acceptance commands strong enough that passing them means done: baton rerun
 
 ## 3. Dispatch
 
-Visible in the agent panel (recommended): call the Agent tool with `subagent_type` `baton:codex` or
-`baton:agy`, a description naming the job, and a prompt of one line:
+Visible in the agent panel (recommended): call the Agent tool with `subagent_type` `baton:agy`,
+`baton:opencode` or `baton:codex`, a description naming the job, and a prompt of one line:
 `brief: /abs/path/.baton/brief-x.md` (with `flags: --mode read` for a read brief). The panel row
 shows live progress (`codex · xhigh · 3 files · tests 12/14 · 80k tok · 5h 14%`).
 
-Zero lead tokens while it runs: `baton run codex --brief <file> --json` with Bash
+Zero lead tokens while it runs: `baton run <worker> --brief <file> --json` with Bash
 `run_in_background: true`; you are notified when it exits. Several independent tasks can run at
 once; each gets its own worktree.
 
