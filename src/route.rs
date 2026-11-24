@@ -795,11 +795,13 @@ mod tests {
 
     // Since 2026-11-13 (user): agy's model policy (agy.rs), each model gated by its own buckets.
     // Since 2026-11-18 (user): one chain for every task, Argon, then Neon, then Hydrogen.
+    // Since 2026-11-24 (user): Carbon first; here with the Pro buckets of 2026-11-13 (an Argon bucket).
     #[test]
     // fn agy_routes_argon_for_judgement_and_hydrogen_for_tool_work() {
     //     use crate::agy::{ARGON, HYDROGEN};
     fn agy_routes_argon_then_neon_then_hydrogen() {
-        use crate::agy::{ARGON, HYDROGEN, NEON};
+        // use crate::agy::{ARGON, HYDROGEN, NEON};
+        use crate::agy::{ARGON, CARBON, HYDROGEN, NEON};
         let mut u = usage();
         u.0["codex"]["error"] = json!("usage limit reached");
         u.0["agy"]["windows"].as_array_mut().unwrap().extend([
@@ -819,23 +821,28 @@ mod tests {
                 .collect()
         };
         let review = route("Review the parser", &u);
-        assert_eq!(review.choice.model.as_deref(), Some(ARGON));
+        // assert_eq!(review.choice.model.as_deref(), Some(ARGON));
+        assert_eq!(review.choice.model.as_deref(), Some(CARBON));
         // agy's effort is the highest `agy models` lists, found at run time.
         assert!(review.choice.effort.is_none());
         // assert_eq!(agy(&review), [(ARGON.to_string(), true), (HYDROGEN.to_string(), false)]);
-        let chain = [(ARGON.to_string(), true), (NEON.to_string(), false), (HYDROGEN.to_string(), false)];
+        // let chain = [(ARGON.to_string(), true), (NEON.to_string(), false), (HYDROGEN.to_string(), false)];
+        let chain = [(CARBON.to_string(), true), (ARGON.to_string(), false), (NEON.to_string(), false), (HYDROGEN.to_string(), false)];
         assert_eq!(agy(&review), chain);
         let mechanical = route("Rename the widget", &u);
         // assert_eq!(mechanical.choice.model.as_deref(), Some(HYDROGEN));
         // assert_eq!(agy(&mechanical), [(HYDROGEN.to_string(), true)]);
-        assert_eq!(mechanical.choice.model.as_deref(), Some(ARGON));
+        // assert_eq!(mechanical.choice.model.as_deref(), Some(ARGON));
+        assert_eq!(mechanical.choice.model.as_deref(), Some(CARBON));
         assert_eq!(agy(&mechanical), chain);
         // Argon used up: Hydrogen stands in.
         // Since 2026-11-18: Neon stands in.
+        // Since 2026-11-24: Carbon, on the Gemini group's buckets, stays first.
         u.0["agy"]["windows"][1]["used"] = json!(0.999);
         let review = route("Review the parser", &u);
         // assert_eq!(review.choice.model.as_deref(), Some(HYDROGEN));
-        assert_eq!(review.choice.model.as_deref(), Some(NEON));
+        // assert_eq!(review.choice.model.as_deref(), Some(NEON));
+        assert_eq!(review.choice.model.as_deref(), Some(CARBON));
         assert!(agy(&review).contains(&(ARGON.to_string(), false)));
         assert!(agy(&review).contains(&(HYDROGEN.to_string(), false)));
         // The Gemini group's 5 h bucket is the tighter one and gates Hydrogen.
@@ -845,11 +852,34 @@ mod tests {
         // let hydrogen = &mechanical.candidates.iter().find(|c| c.agent == "agy").unwrap();
         // assert_eq!(hydrogen.window.as_deref(), Some("gemini-5h"));
         // assert!(hydrogen.score.is_none());
-        for model in [NEON, HYDROGEN] {
+        // for model in [NEON, HYDROGEN] {
+        for model in [CARBON, NEON, HYDROGEN] {
             let c = mechanical.candidates.iter().find(|c| c.model.as_deref() == Some(model)).unwrap();
             assert_eq!(c.window.as_deref(), Some("gemini-5h"));
             assert!(c.score.is_none());
         }
         assert_eq!(mechanical.choice.agent, "claude");
+    }
+
+    // Since 2026-11-24: agy 1.5.16 lists no Argon bucket; one Gemini group meters every Gemini model.
+    #[test]
+    fn agy_routes_carbon_first_on_one_gemini_group() {
+        use crate::agy::{ARGON, CARBON};
+        let mut u = usage();
+        u.0["codex"]["error"] = json!("usage limit reached");
+        u.0["agy"]["windows"].as_array_mut().unwrap().extend([
+            json!({"id":"gemini-5h","used":0.2,"pace":0.5}),
+            json!({"id":"3p-weekly","used":0.0}),
+        ]);
+        let b = brief("Review the parser", "src/main.rs", "true");
+        let route = |u: &Usage| recommend(&classify(&b, None, None).unwrap(), &b, &[], u, THIRD_PARTY_CUTOFF, "read");
+        assert_eq!(route(&u).choice.model.as_deref(), Some(CARBON));
+        // The group used up: Argon is out with Carbon, gated by the same 5 h bucket, and agy is not chosen.
+        u.0["agy"]["windows"][1]["used"] = json!(0.999);
+        let r = route(&u);
+        let argon = r.candidates.iter().find(|c| c.model.as_deref() == Some(ARGON)).unwrap();
+        assert_eq!(argon.window.as_deref(), Some("gemini-5h"));
+        assert!(argon.score.is_none());
+        assert_ne!(r.choice.agent, "agy");
     }
 }

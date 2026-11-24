@@ -53,13 +53,17 @@ pub struct Agy {
 // Superseded 2026-11-18 (user): one chain for all work, strongest first: Argon (own weekly bucket),
 // then Neon, then Hydrogen (both on the Gemini group's buckets), then Flash; each at its highest
 // listed effort (Argon high, Neon and Hydrogen xhigh today).
+// Superseded 2026-11-24 (user): Carbon first (listed since agy 1.5.16 as low, medium, high), then
+// Argon, Neon, Hydrogen, Flash; each at its highest listed effort (Carbon high).
+pub const CARBON: &str = "gemini-4-carbon";
 pub const ARGON: &str = "gemini-4-argon";
 pub const NEON: &str = "gemini-4-neon";
 pub const HYDROGEN: &str = "gemini-4-hydrogen";
 pub const FLASH: &str = "gemini-3.8-flash";
 // Strongest first: a model agy does not list falls back to the next one it does.
 // pub const MODELS: [&str; 3] = [ARGON, HYDROGEN, FLASH];
-pub const MODELS: [&str; 4] = [ARGON, NEON, HYDROGEN, FLASH];
+// pub const MODELS: [&str; 4] = [ARGON, NEON, HYDROGEN, FLASH];
+pub const MODELS: [&str; 5] = [CARBON, ARGON, NEON, HYDROGEN, FLASH];
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 // Tool-like work went to Hydrogen until 2026-11-18; a review is always judgement.
@@ -77,14 +81,19 @@ const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 //     }
 // }
 pub fn tiers(_task_type: &str, _difficulty: u8) -> Vec<&'static str> {
-    vec![ARGON, NEON, HYDROGEN]
+    // vec![ARGON, NEON, HYDROGEN]
+    vec![CARBON, ARGON, NEON, HYDROGEN]
 }
 
 /// Whether a `/usage` bucket meters a model. On Pro, Argon has its own weekly bucket; the other
 /// Gemini models share the Gemini group's 5 h and weekly buckets; Claude and GPT the 3p group's.
-pub fn meters(model: &str, bucket: &str) -> bool {
+/// `argon_bucket`: the account's /usage lists an Argon bucket. Without one (2026-11-24: Argon is in
+/// the Gemini group) Argon is metered like the other Gemini models.
+// pub fn meters(model: &str, bucket: &str) -> bool {
+pub fn meters(model: &str, bucket: &str, argon_bucket: bool) -> bool {
     let argon = bucket.starts_with("gemini-argon");
-    if model.starts_with(ARGON) {
+    // if model.starts_with(ARGON) {
+    if model.starts_with(ARGON) && argon_bucket {
         argon
     } else if model.starts_with("claude-") || model.starts_with("gpt-") {
         bucket.starts_with("3p-")
@@ -878,6 +887,8 @@ mod tests {
     const PRO: &str = "gemini-4-argon-medium gemini-4-argon-high gemini-4-argon-low gemini-4-hydrogen-high gemini-4-hydrogen-xhigh gemini-4-hydrogen-medium gemini-4-hydrogen-low gemini-pro-orchestrator-g1-pro gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-opus-5-5-low claude-opus-5-5-medium claude-opus-5-5-high claude-sonnet-5-5-low claude-sonnet-5-5-medium claude-sonnet-5-5-high gpt-oss-120b-medium";
     // `agy models` on 2026-11-18 (Pro plan): Neon added.
     const PRO_NEON: &str = "gemini-4-neon-high gemini-4-neon-xhigh gemini-4-neon-medium gemini-4-neon-low gemini-4-argon-medium gemini-4-argon-high gemini-4-argon-low gemini-4-hydrogen-high gemini-4-hydrogen-xhigh gemini-4-hydrogen-medium gemini-4-hydrogen-low gemini-pro-orchestrator-neon gemini-pro-orchestrator-g1-pro gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-opus-5-5-low claude-opus-5-5-medium claude-opus-5-5-high claude-sonnet-5-5-low claude-sonnet-5-5-medium claude-sonnet-5-5-high gpt-oss-120b-medium";
+    // `agy models` on 2026-11-24 (agy 1.5.16): Carbon added, its highest effort high.
+    const PRO_CARBON: &str = "gemini-4-neon-high gemini-4-neon-xhigh gemini-4-neon-medium gemini-4-neon-low gemini-4-carbon-medium gemini-4-carbon-high gemini-4-carbon-low gemini-4-argon-medium gemini-4-argon-high gemini-4-argon-low gemini-4-hydrogen-high gemini-4-hydrogen-xhigh gemini-4-hydrogen-medium gemini-4-hydrogen-low gemini-pro-orchestrator-neon gemini-pro-orchestrator gemini-pro-orchestrator-argon gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low claude-opus-5-5-low claude-opus-5-5-medium claude-opus-5-5-high claude-sonnet-5-5-low claude-sonnet-5-5-medium claude-sonnet-5-5-high gpt-oss-120b-medium";
 
     #[test]
     fn explicit_model_falls_back_at_its_highest_listed_effort() {
@@ -887,6 +898,9 @@ mod tests {
         assert_eq!(pick(ARGON, None, &pro), some(ARGON, "high"));
         assert_eq!(pick(HYDROGEN, None, &pro), some(HYDROGEN, "xhigh"));
         assert_eq!(pick(NEON, None, &list(PRO_NEON)), some(NEON, "xhigh"));
+        assert_eq!(pick(CARBON, None, &list(PRO_CARBON)), some(CARBON, "high"));
+        // Carbon not listed (before 2026-11-24): Argon, the next of MODELS.
+        assert_eq!(pick(CARBON, None, &list(PRO_NEON)), some(ARGON, "high"));
         // Neon not listed (2026-11-13): Hydrogen, the next of MODELS.
         assert_eq!(pick(NEON, None, &pro), some(HYDROGEN, "xhigh"));
         // An argon-xhigh listed later is picked up; the caller's effort wins.
@@ -940,14 +954,29 @@ mod tests {
         assert_eq!(first(&judgement, all, &flash), some(FLASH, "high"));
         assert_eq!(first(&judgement, |_: &str| false, &pro), some(FLASH, "high"));
         // agy models failed: the quota alone decides, and agy picks the effort.
-        assert_eq!(first(&judgement, all, &[]), (ARGON.to_string(), None));
-        assert!(meters(ARGON, "gemini-argon-wtu-weekly") && !meters(ARGON, "gemini-weekly"));
+        // assert_eq!(first(&judgement, all, &[]), (ARGON.to_string(), None));
+        assert_eq!(first(&judgement, all, &[]), (CARBON.to_string(), None));
+        // Since 2026-11-24 Carbon leads where agy lists it; used up, Argon.
+        let carbon = list(PRO_CARBON);
+        assert_eq!(first(&judgement, all, &carbon), some(CARBON, "high"));
+        assert_eq!(first(&judgement, |m: &str| m != CARBON, &carbon), some(ARGON, "high"));
+        // assert!(meters(ARGON, "gemini-argon-wtu-weekly") && !meters(ARGON, "gemini-weekly"));
+        // for bucket in ["gemini-weekly", "gemini-5h"] {
+        //     assert!(meters(HYDROGEN, bucket) && meters(FLASH, bucket) && !meters(ARGON, bucket));
+        //     assert!(meters(NEON, bucket));
+        // }
+        // assert!(meters(HYDROGEN, "gemini-weekly") && !meters(HYDROGEN, "gemini-argon-wtu-weekly"));
+        // assert!(meters("claude-opus-5-5", "3p-5h") && !meters("claude-opus-5-5", "gemini-5h"));
+        // With an Argon bucket (Pro, 2026-11-13) Argon is metered by it alone.
+        assert!(meters(ARGON, "gemini-argon-wtu-weekly", true) && !meters(ARGON, "gemini-weekly", true));
         for bucket in ["gemini-weekly", "gemini-5h"] {
-            assert!(meters(HYDROGEN, bucket) && meters(FLASH, bucket) && !meters(ARGON, bucket));
-            assert!(meters(NEON, bucket));
+            assert!(meters(HYDROGEN, bucket, true) && meters(FLASH, bucket, true) && !meters(ARGON, bucket, true));
+            assert!(meters(NEON, bucket, true) && meters(CARBON, bucket, true));
+            // Without one (2026-11-24) Argon shares the Gemini group's buckets.
+            assert!(meters(ARGON, bucket, false) && meters(CARBON, bucket, false));
         }
-        assert!(meters(HYDROGEN, "gemini-weekly") && !meters(HYDROGEN, "gemini-argon-wtu-weekly"));
-        assert!(meters("claude-opus-5-5", "3p-5h") && !meters("claude-opus-5-5", "gemini-5h"));
+        assert!(meters(HYDROGEN, "gemini-weekly", true) && !meters(HYDROGEN, "gemini-argon-wtu-weekly", true));
+        assert!(meters("claude-opus-5-5", "3p-5h", false) && !meters("claude-opus-5-5", "gemini-5h", false));
     }
 
     #[test]

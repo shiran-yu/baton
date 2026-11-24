@@ -20,7 +20,7 @@ Reading is delegable too, judging is not: see "Read-only research" below.
 ## 1. Check capacity and pick the worker
 
 ```sh
-baton usage                       # remaining for claude, agy (argon, 5h, wk), opencode, codex
+baton usage                       # remaining for claude, agy (gemini 5h and wk), opencode, codex
 baton route --brief <file>        # worker, model, effort and the reason
 ```
 
@@ -30,19 +30,20 @@ Every worker runs at its highest effort, with the user's own plugins and skills 
 reliability over cost): Codex the strongest model its account lists (`gpt-6-astra`, then
 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-luna`; the free plan gets Terra) at that model's highest
 effort (Terra: `ultra`), read by `baton usage`, with the user's `~/.codex/config.toml`.
-agy picks its model by the user's priority (2026-11-18, Pro plan), the same chain for every task,
-strongest first:
+agy picks its model by the user's priority (2026-11-24), the same chain for every task, strongest
+first, each model where `agy models` lists it:
 
-1. **Argon** (`gemini-4-argon`, the flagship) whenever its own weekly bucket
-   `gemini-argon-wtu-weekly` allows.
-2. **Neon** (`gemini-4-neon`, close to Argon on code and multi-step reasoning) when Argon is used up.
-3. **Hydrogen** (`gemini-4-hydrogen`, the light, fast model) when Neon is unavailable.
+1. **Carbon** (`gemini-4-carbon`), first since 2026-11-24.
+2. **Argon** (`gemini-4-argon`) when Carbon is not listed.
+3. **Neon** (`gemini-4-neon`, close to Argon on code and multi-step reasoning).
+4. **Hydrogen** (`gemini-4-hydrogen`, the light, fast model).
 
-- Neon and Hydrogen draw on the Gemini group's `gemini-5h` and `gemini-weekly`, so when that group
-  is used up both are out together.
-- Each model runs at the highest effort `agy models` lists for it (Argon `high`, Neon and Hydrogen
-  `xhigh` today); Gemini 3.8 Flash at its highest is the last fallback. Your `--model` and
-  `--effort` win; agy's Claude models run only when `--model` names one.
+- Since 2026-11-24 (agy 1.5.16) one Gemini group meters every Gemini model: `gemini-5h` and
+  `gemini-weekly`, so when that group is used up all are out together. An account whose `/usage`
+  lists an Argon bucket (`gemini-argon-wtu-weekly`, Pro of 2026-11-13) gates Argon by that bucket.
+- Each model runs at the highest effort `agy models` lists for it (Carbon and Argon `high`, Neon
+  and Hydrogen `xhigh` today); Gemini 3.8 Flash at its highest is the last fallback. Your `--model`
+  and `--effort` win; agy's Claude models run only when `--model` names one.
 
 `baton route` and `baton run agy` without `--model` apply these tiers, each model gated by the
 tightest bucket that meters it. Routing picks the worker, never a weaker model or effort. Do not

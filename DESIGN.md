@@ -133,6 +133,9 @@ No `--ephemeral`: the rollout under `~/.codex/sessions/` carries live `token_cou
   which would hide the worktree's worker agent; and outside a trusted workspace agy soft-denies even
   reads, so `baton setup` adds `read_file(<root>/)` and `write_file(<root>/)` to agy's
   `permissions.allow`. Codex worktrees stay under `$BATON_HOME/wt/`.
+- Since 2026-11-24 (user) the chain starts with Carbon (`gemini-4-carbon`, at `high`, the highest
+  effort `agy models` lists for it), then Argon, Neon, Hydrogen as below; a model agy does not list
+  is skipped. The text below is the policy of 2026-11-18.
 - Model and effort, chosen at run time by the user's policy (2026-11-18, Pro plan; one place,
   `src/agy.rs`): one chain for every task, strongest first. Argon (`gemini-4-argon`, the flagship)
   while its own `gemini-argon-wtu-weekly` bucket allows, then Neon (`gemini-4-neon`), then Hydrogen
@@ -193,6 +196,9 @@ No `--ephemeral`: the rollout under `~/.codex/sessions/` carries live `token_cou
   by its `window` and skips one it cannot read; each model is gated by the tightest bucket that
   meters it. A successful live read replaces a sticky exhaustion mark on agy, so a run that used up
   Argon does not keep Hydrogen blocked.
+- Since 2026-11-24 (agy 1.5.16) `/usage` lists no Argon bucket: one Gemini group (`gemini-weekly`,
+  `gemini-5h`) meters Carbon, Argon, Neon, Hydrogen and Flash. Argon is gated by its own bucket only
+  when `/usage` lists one, else by the Gemini group's (`agy::meters`).
 - Global hooks in `~/.gemini/config/hooks.json` (for example Orca's status hooks) run on every
   worker call and add process start-up time; `baton doctor` reports them.
 
@@ -265,7 +271,7 @@ Phases: `starting`, `working`, `verifying`, `done`, `failed`. Human-readable lin
   whatever the difficulty (user, 2026-10-29). Codex: the first of `codex::MODELS` the account's
   `model/list` offers, at its highest listed effort, cached by `baton usage` (2026-11-21; was
   `gpt-6-astra` at `xhigh`, which the free plan lacks). agy: the model
-  policy of §5 (2026-11-18): Argon, then Neon, then Hydrogen for every task, each a
+  policy of §5 (2026-11-24): Carbon, then Argon, Neon, Hydrogen for every task, each a
   candidate gated by its own buckets, a weaker one skipped while a stronger one is eligible, with
   the effort found at run time. Copilot keeps its own difficulty ladder.
 

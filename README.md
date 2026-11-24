@@ -111,6 +111,7 @@ implemented by Codex in its own worktree, verified by baton and reviewed before 
 | Automatic sync: each session start (`doctor --quick`) runs `baton sync` in the background when Claude Code's plugin list changed (log `$BATON_HOME/sync.log`; `BATON_NO_AUTO_SYNC=1` turns it off) | done |
 | `baton sync --to opencode` (a default host where opencode is installed): skills staged as for agy into `$BATON_HOME/opencode-plugins/`, linked into `~/.config/opencode/skills/`, then `opencode reload`; hooks, agents and MCP servers are not converted, so trading plugins stay out | done |
 | opencode worker: DeepSeek v4.1 Flash (free) at `max`, shown as `deepseek`; read-only `$HOME` namespace; priority agy, opencode, Codex | done |
+| agy chain Carbon (`gemini-4-carbon` at `high`), Argon, Neon, Hydrogen, then Flash; Argon on the Gemini group's buckets when `/usage` lists no Argon bucket (agy 1.5.16) | done |
 | `baton setup` and release binaries for macOS and Linux (x86_64, arm64) | done; first tagged release pending |
 | Live token counts and quota for Codex while it works; quota and auth failures stop routing to that agent | done |
 

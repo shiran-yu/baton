@@ -664,6 +664,28 @@ fn agy_verified_worker_agent_and_exact_exclusion() {
 }
 
 #[test]
+fn agy_runs_carbon_first_at_its_highest_effort() {
+    // `agy models` on 2026-11-24 (agy 1.5.16) lists Carbon (low, medium, high): it leads (user 2026-11-24).
+    let f = Fixture::new();
+    let out = f
+        .command()
+        .env(
+            "FAKE_AGY_MODELS",
+            "gemini-4-neon-high gemini-4-neon-xhigh gemini-4-neon-medium gemini-4-neon-low gemini-4-carbon-medium gemini-4-carbon-high gemini-4-carbon-low gemini-4-argon-medium gemini-4-argon-high gemini-4-argon-low gemini-4-hydrogen-high gemini-4-hydrogen-xhigh gemini-4-hydrogen-medium gemini-4-hydrogen-low gemini-3.8-flash-high gemini-3.8-flash-medium gemini-3.8-flash-low",
+        )
+        .args(["run", "agy", "--task", "carbon", "--brief"])
+        .arg(f.brief("carbon", "Write a file", "true"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    code(&out, 0);
+    let args = fs::read_to_string(f.task("carbon").join("agy-argv.txt")).unwrap();
+    assert!(args.contains("--model\ngemini-4-carbon\n--effort\nhigh\n"), "{args}");
+    assert_eq!(json(&out)["model"], "gemini-4-carbon");
+    assert_eq!(json(&out)["effort"], "high");
+}
+
+#[test]
 fn agy_falls_back_to_the_next_listed_model() {
     let f = Fixture::new();
     // After the Claude 4.6 models leave agy: Gemini at its highest listed effort.
@@ -1165,6 +1187,8 @@ fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
     // No 3p bucket in the cache, so agy routes to Gemini at its highest listed effort.
     // No Argon bucket in the cache, so agy routes to Hydrogen at its highest listed effort.
     // Since 2026-11-18: to Neon, the next of the chain, at xhigh.
+    // Since 2026-11-24 Argon without its own bucket is metered by the Gemini group's; the fake agy
+    // lists no Carbon, so Argon at high.
     // for (agent, codex_used, model, effort) in [
     //     ("codex", 0.1, "gpt-6-astra", "xhigh"),
     for (agent, codex_used, agy_used, model, effort) in [
@@ -1172,7 +1196,8 @@ fn auto_runs_selected_worker_and_preserves_classification_on_fix() {
         // ("agy", 0.96, "gemini-3.8-flash", "high"),
         // ("agy", 0.96, "gemini-4-hydrogen", "xhigh"),
         // ("agy", 0.96, "gemini-4-neon", "xhigh"),
-        ("agy", 0.96, 0.0, "gemini-4-neon", "xhigh"),
+        // ("agy", 0.96, 0.0, "gemini-4-neon", "xhigh"),
+        ("agy", 0.96, 0.0, "gemini-4-argon", "high"),
     ] {
         let f = Fixture::new();
         // cache_usage(&f, codex_used);

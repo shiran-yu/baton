@@ -107,6 +107,8 @@ impl Usage {
         let mut remaining = f64::INFINITY;
         let mut tightest = String::new();
         let mut pace = source["pace"].as_f64();
+        // whether agy lists an Argon bucket; without one Argon is in the Gemini group (2026-11-24)
+        let argon_bucket = windows(data).iter().any(|w| name(w).starts_with("gemini-argon"));
         for w in windows(data) {
             let label = name(&w);
             // if agent == "agy"
@@ -119,7 +121,8 @@ impl Usage {
             // {
             //     continue;
             // }
-            if agent == "agy" && !crate::agy::meters(model, &label) {
+            // if agent == "agy" && !crate::agy::meters(model, &label) {
+            if agent == "agy" && !crate::agy::meters(model, &label, argon_bucket) {
                 continue;
             }
             let budget = if agent == "codex" {
@@ -265,7 +268,10 @@ mod tests {
                 < 1e-8
         );
         // A free-tier cache has no Argon bucket.
-        assert!(usage.quota("agy", crate::agy::ARGON).is_err());
+        // assert!(usage.quota("agy", crate::agy::ARGON).is_err());
+        // Since 2026-11-24 Argon without its own bucket is metered by the Gemini group's; whether
+        // agy offers it at all is `agy models`' call (agy.rs first()).
+        assert_eq!(usage.quota("agy", crate::agy::ARGON).unwrap().window, "gemini-weekly");
         usage.0["sources"]["codex"]["result"]["rateLimits"]["rateLimitReachedType"] =
             json!("primary");
         assert!(usage.quota("codex", "").is_err());
@@ -290,5 +296,22 @@ mod tests {
         raw["command"]["data"]["groups"][2]["buckets"][0]["remaining_fraction"] = json!(0.0);
         assert_eq!(usage(&raw).quota("agy", crate::agy::ARGON).unwrap().remaining, 0.0);
         assert!(usage(&raw).quota("agy", crate::agy::HYDROGEN).unwrap().remaining > 0.0);
+    }
+
+    #[test]
+    fn one_gemini_group_meters_carbon_and_argon() {
+        // `agy -p /usage --output-format json` on 2026-11-24 (agy 1.5.16): one Gemini group, no Argon bucket.
+        let mut raw: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/usage/agy-usage-carbon.json"))
+                .unwrap();
+        let usage = |raw: &Value| Usage(json!({"sources":{"agy":raw}}));
+        for model in [crate::agy::CARBON, crate::agy::ARGON, crate::agy::NEON] {
+            assert_eq!(usage(&raw).quota("agy", model).unwrap().window, "gemini-5h", "{model}");
+        }
+        // The Gemini group used up: Argon is out with Carbon, not ungated.
+        raw["command"]["data"]["groups"][0]["buckets"][1]["remaining_fraction"] = json!(0.0);
+        for model in [crate::agy::CARBON, crate::agy::ARGON] {
+            assert_eq!(usage(&raw).quota("agy", model).unwrap().remaining, 0.0, "{model}");
+        }
     }
 }
